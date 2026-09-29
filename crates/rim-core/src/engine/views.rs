@@ -89,6 +89,7 @@ impl Engine {
                     devices,
                     introduced_by: c.introduced_by.clone(),
                     profile: c.profile.clone(),
+                    now_playing: best.map(|r| r.pres.now_playing.clone()).unwrap_or_default(),
                 }
             })
             .collect();

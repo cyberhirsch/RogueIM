@@ -763,6 +763,7 @@ impl Engine {
             helper: self.p.net.helper || self.node,
             bot: self.bot,
             addrs: self.my_addrs(),
+            now_playing: self.now_playing.clone(),
         }
     }
 
@@ -1230,6 +1231,7 @@ impl Engine {
                 }
             }
             Body::Remote(cmd) => self.on_remote(cmd)?,
+            Body::PluginState { plugin, state, .. } => self.emit(Event::PluginState { plugin, state }),
             Body::Receipt { ids } => {
                 for id in ids {
                     self.delivered("self", device, id, true);

@@ -242,6 +242,8 @@ pub enum Body {
     LinkGrant(Box<LinkGrant>),
     History { contact: String, lines: Vec<HistoryLine> },
     Remote(RemoteCommand),
+    /// Plugin state shared between own devices (e.g. the pomodoro timer).
+    PluginState { plugin: String, state: String, updated: i64 },
 
     // --- store and forward
     Hold { device: String, wire: WireReq, expires: i64 },
@@ -272,6 +274,9 @@ pub struct Presence {
     pub helper: bool,
     pub bot: bool,
     pub addrs: Vec<String>,
+    /// "Artist – Title" when the user shares what they listen to (PRD GD-10).
+    #[serde(default)]
+    pub now_playing: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
@@ -450,6 +455,7 @@ pub struct ContactView {
     pub devices: Vec<DeviceView>,
     pub introduced_by: String,
     pub profile: Profile,
+    pub now_playing: String,
 }
 
 #[derive(Debug, Clone)]

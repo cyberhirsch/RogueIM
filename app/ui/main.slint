@@ -24,6 +24,7 @@ export struct ContactRow {
     bot: bool,
     collapsed: bool,
     count: int,
+    music: string,
 }
 
 export struct PendingRow { id: string, nick: string, fp: string, text: string, introduced-by: string, warning: string }
@@ -33,6 +34,39 @@ export struct DeviceRow { peer: string, name: string, os: string, device: string
 export struct PickRow { id: string, name: string, checked: bool }
 export struct SearchRow { id: string, name: string, time: string, text: string }
 export struct MemberRow { account: string, name: string, admin: bool }
+
+export struct GadgetItem { kind: string, id: string, text: string, hint: string, value: float, checked: bool }
+export struct GadgetRow { items: [GadgetItem] }
+export struct Gadget { id: string, name: string, collapsed: bool, rows: [GadgetRow] }
+export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool }
+
+// One element of a plugin's section, drawn by RogueIM (plugins never render).
+component GadgetItemView inherits Rectangle {
+    in property <GadgetItem> item;
+    callback click();
+    callback input(string);
+    callback check(bool);
+    min-height: 18px;
+    horizontal-stretch: root.item.kind == "button" ? 0 : 1;
+    if root.item.kind == "title": Text { text: root.item.text; color: Theme.accent; font-size: Theme.small; font-weight: 700; vertical-alignment: center; overflow: elide; }
+    if root.item.kind == "text": Text { text: root.item.text; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; overflow: elide; }
+    if root.item.kind == "dim": Text { text: root.item.text; color: Theme.dim; font-size: 10px; vertical-alignment: center; wrap: word-wrap; }
+    if root.item.kind == "button": RButton { text: root.item.text; clicked => { root.click(); } }
+    if root.item.kind == "input": RInput {
+        text: root.item.text;
+        placeholder: root.item.hint;
+        password: root.item.id == "pass";
+        accepted(t) => { root.input(t); }
+    }
+    if root.item.kind == "progress": Rectangle {
+        y: (parent.height - 5px) / 2;
+        height: 5px;
+        background: Theme.line;
+        Rectangle { x: 0; width: parent.width * max(0.0, min(1.0, root.item.value)); background: Theme.accent; }
+    }
+    if root.item.kind == "check": RCheck { text: root.item.text; checked: root.item.checked; toggled(v) => { root.check(v); } }
+}
+
 
 export component MainWindow inherits Window {
     title: "RogueIM";
@@ -157,6 +191,11 @@ export component MainWindow inherits Window {
     in property <bool> dchat-authorized: true;
     in property <[ChatLine]> dchat-lines;
 
+    // plugins
+    in property <[Gadget]> gadgets;
+    in property <[PluginRow]> plugins;
+    in property <bool> can-task;
+
     // ---------------------------------------------------------------- callbacks
     callback create(string, string, string);
     callback unlock(string);
@@ -220,6 +259,11 @@ export component MainWindow inherits Window {
     callback dchat-undock();
     callback dchat-close();
     callback split-changed(float);
+    callback gadget-click(string, string);
+    callback gadget-input(string, string, string);
+    callback gadget-check(string, string, bool);
+    callback gadget-collapse(string);
+    callback plugin-toggle(string, bool);
 
     // ---------------------------------------------------------------- auto-hide strip
     if root.collapsed: Rectangle {
@@ -536,6 +580,17 @@ export component MainWindow inherits Window {
                     RTab { text: "devices"; active: root.settings-tab == 2; clicked => { root.settings-tab = 2; } }
                     RTab { text: "backup"; active: root.settings-tab == 3; clicked => { root.settings-tab = 3; } }
                     RTab { text: "me"; active: root.settings-tab == 4; clicked => { root.settings-tab = 4; } }
+                    RTab { text: "plugins"; active: root.settings-tab == 5; clicked => { root.settings-tab = 5; } }
+                }
+
+                if root.settings-tab == 5: VerticalLayout {
+                    spacing: 4px;
+                    RCaption { text: "Plugins run as separate programs, only while enabled, with only the permissions listed."; wrap: word-wrap; }
+                    for pl in root.plugins: VerticalLayout {
+                        RCheck { text: pl.name + (pl.installed ? "" : " (not installed)"); checked: pl.enabled; toggled(v) => { root.plugin-toggle(pl.id, v); } }
+                        Text { text: pl.description; color: Theme.fg; font-size: 10px; wrap: word-wrap; }
+                        Text { text: "may: " + pl.caps; color: Theme.dim; font-size: 9px; wrap: word-wrap; }
+                    }
                 }
 
                 if root.settings-tab == 0: VerticalLayout {
@@ -735,7 +790,7 @@ export component MainWindow inherits Window {
                                     overflow: elide;
                                 }
                                 Text {
-                                    text: c.typing ? "typing…" : c.awaiting ? "awaiting authorization" : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
+                                    text: c.typing ? "typing…" : c.awaiting ? "awaiting authorization" : c.music != "" && c.status != "Offline" ? "♪ " + c.music : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
                                     color: c.awaiting || c.typing ? Theme.accent : Theme.dim;
                                     font-size: Theme.small;
                                     overflow: elide;
@@ -809,6 +864,7 @@ export component MainWindow inherits Window {
                 typing: root.dchat-typing;
                 authorized: root.dchat-authorized;
                 lines: root.dchat-lines;
+                can-task: root.can-task;
                 send(t, u, r) => { root.dchat-send(t, u, r); }
                 typed => { root.dchat-typed(); }
                 line-action(a, i) => { root.dchat-line-action(a, i); }
@@ -817,6 +873,35 @@ export component MainWindow inherits Window {
                 file-action(a, i) => { root.dchat-file-action(a, i); }
                 TButton { glyph: "^"; clicked => { root.dchat-undock(); } }
                 TButton { glyph: "x"; danger: true; clicked => { root.dchat-close(); } }
+            }
+        }
+
+        // plugin sections (fixed size, outside the split region)
+        for g in root.gadgets: Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: Theme.line;
+            background: Theme.panel;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 3px;
+                Rectangle {
+                    height: 14px;
+                    Text { text: (g.collapsed ? "▸ " : "▾ ") + g.name; color: Theme.dim; font-size: 10px; vertical-alignment: center; }
+                    TouchArea { mouse-cursor: pointer; clicked => { root.gadget-collapse(g.id); } }
+                }
+                if !g.collapsed: VerticalLayout {
+                    spacing: 3px;
+                    for row in g.rows: HorizontalLayout {
+                        spacing: 4px;
+                        for it in row.items: GadgetItemView {
+                            item: it;
+                            click => { root.gadget-click(g.id, it.id); }
+                            input(v) => { root.gadget-input(g.id, it.id, v); }
+                            check(v) => { root.gadget-check(g.id, it.id, v); }
+                        }
+                    }
+                }
             }
         }
 

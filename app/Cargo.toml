@@ -8,10 +8,12 @@ arboard = "3.6.1"
 auto-launch = "0.6"
 directories = "6.0.0"
 global-hotkey = "0.8"
+interprocess = "2"
 notify-rust = "4"
 raw-window-handle = "0.6"
 rfd = "0.17"
 rim-core = { version = "0.1.0", path = "../crates/rim-core" }
+rim-plugin-sdk = { version = "0.1.0", path = "../crates/rim-plugin-sdk" }
 rodio = { version = "0.22", default-features = false, features = ["playback", "wav"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"

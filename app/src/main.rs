@@ -5,6 +5,7 @@
 
 mod desktop;
 mod dock;
+mod plugins;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -16,7 +17,8 @@ use std::time::{Duration, Instant};
 use rim_core::engine::{RestoreSecret, StartMode};
 use rim_core::store::Store;
 use rim_core::*;
-use slint::{CloseRequestResponse, Color, ComponentHandle, ModelRc, SharedString, VecModel};
+use rim_plugin_sdk::{Item, ToHost, ToPlugin};
+use slint::{CloseRequestResponse, Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use time::UtcOffset;
 
 slint::include_modules!();
@@ -44,6 +46,8 @@ struct Settings {
     auto_na: u32,
     lock_idle: u32,
     collapsed_folders: Vec<String>,
+    plugins: Vec<String>,
+    collapsed_gadgets: Vec<String>,
 }
 
 impl Default for Settings {
@@ -63,6 +67,8 @@ impl Default for Settings {
             auto_na: 30,
             lock_idle: 0,
             collapsed_folders: vec![],
+            plugins: vec![],
+            collapsed_gadgets: vec![],
         }
     }
 }
@@ -182,6 +188,11 @@ struct App {
     audio: desktop::Audio,
     tray: Option<desktop::Tray>,
     hotkeys: desktop::Hotkeys,
+    host: plugins::Host,
+    gadgets: Rc<VecModel<Gadget>>,
+    gadget_rows: HashMap<String, (Rc<VecModel<GadgetRow>>, Vec<Vec<Item>>)>,
+    plugin_prev_status: Option<(Status, String)>,
+    my_away: String,
 }
 
 type AppRc = Rc<RefCell<App>>;
@@ -447,6 +458,11 @@ fn copy_to_clipboard(app: &AppRc, text: &str) {
 fn chat_line_action(app: &AppRc, key: &str, action: &str, arg: &str) {
     match action {
         "copy" => copy_to_clipboard(app, arg),
+        "task" => {
+            let (who, text) = arg.split_once('\u{1}').unwrap_or(("", arg));
+            app.borrow().host.send("todo", &ToPlugin::Task { text: text.to_string(), from: who.to_string() });
+            notice(app, "Sent to your todo list.");
+        }
         "delete" if mode_of(key) == "contact" => {
             if let Ok(id) = arg.parse() {
                 app.borrow().send(Command::DeleteText { id: key.to_string(), msg: id });
@@ -535,6 +551,7 @@ fn open_chat(app: &AppRc, key: &str) {
         let w = ChatWindow::new().expect("chat window");
         apply_theme(&w.global::<Theme>(), palette(&app.borrow().settings.theme));
         w.set_mode(mode_of(key).into());
+        w.set_can_task(app.borrow().host.is_running("todo"));
         let (ap, k) = (app.clone(), key.to_string());
         w.on_send(move |t, u, r| chat_send(&ap, &k, &t, u, &r));
         let (ap, k) = (app.clone(), key.to_string());
@@ -657,6 +674,7 @@ fn plain_row(kind: &str, id: &str, name: &str, device: &str, tint: Color) -> Con
         bot: false,
         collapsed: false,
         count: 0,
+        music: "".into(),
     }
 }
 
@@ -684,6 +702,7 @@ fn rebuild_contacts(app: &AppRc) {
         bot: c.bot,
         collapsed: false,
         count: 0,
+        music: c.now_playing.clone().into(),
     };
     let header = |name: &str, count: usize| {
         let mut r = plain_row("folder", name, name, "", acc);
@@ -868,6 +887,9 @@ fn lock(app: &AppRc, reason: &str) {
         a.histories.clear();
         a.docked_chat = None;
         a.auto_prev = None;
+        a.host.stop_all();
+        a.gadget_rows.clear();
+        a.gadgets.set_vec(vec![]);
         a.main.upgrade()
     };
     if let Some(m) = m {
@@ -1115,6 +1137,11 @@ fn handle_event(app: &AppRc, ev: Event) {
             m.set_s_backup_hours(backup_hours.to_string().into());
             m.set_s_backup_keep(backup_keep.to_string().into());
         }
+        Event::PluginState { plugin, state } => {
+            if let Ok(v) = serde_json::from_str(&state) {
+                app.borrow().host.send(&plugin, &ToPlugin::State { state: v });
+            }
+        }
         Event::Locked => lock(app, "Locked from another device. Unlock to continue."),
         Event::Wiped => lock(app, "This device was wiped. Its account data is gone from this computer."),
         Event::Stopped => {
@@ -1144,9 +1171,15 @@ fn on_unlocked(app: &AppRc, ev: Event) {
     m.set_my_fp(fingerprint.into());
     m.set_my_os(os.into());
     m.set_my_device(device_class.as_str().into());
+    app.borrow_mut().my_away = away_msg.clone();
     m.set_away_msg(away_msg.into());
     set_my_status(app, status);
     app.borrow().send(Command::NetInfo);
+    let enabled = app.borrow().settings.plugins.clone();
+    for id in enabled {
+        start_plugin(app, &id);
+    }
+    refresh_plugin_rows(app);
 }
 
 // ================================================================ main
@@ -1179,6 +1212,7 @@ fn shutdown(app: &AppRc) {
         let _ = m.hide();
     }
     let mut a = app.borrow_mut();
+    a.host.stop_all();
     for w in a.chats.values() {
         let _ = w.hide();
     }
@@ -1264,12 +1298,20 @@ fn main() {
         audio: if std::env::var_os("RIM_NO_AUDIO").is_some() { desktop::Audio::none() } else { desktop::Audio::new() },
         tray: if std::env::var_os("RIM_NO_TRAY").is_some() { None } else { desktop::Tray::new() },
         hotkeys: if std::env::var_os("RIM_NO_HOTKEYS").is_some() { desktop::Hotkeys::none() } else { desktop::Hotkeys::new() },
+        host: plugins::Host::new(),
+        gadgets: Rc::new(VecModel::default()),
+        gadget_rows: HashMap::new(),
+        plugin_prev_status: None,
+        my_away: String::new(),
     }));
+    main.set_gadgets(ModelRc::from(app.borrow().gadgets.clone()));
+    refresh_plugin_rows(&app);
 
     wire_login(&app, &main);
     wire_main(&app, &main);
     wire_settings(&app, &main);
     wire_docked_chat(&app, &main);
+    wire_plugins(&app, &main);
 
     // Pump engine events, tray menu and hotkeys on the UI thread.
     let pump = slint::Timer::default();
@@ -1284,6 +1326,7 @@ fn main() {
                 handle_event(&app, ev);
             }
             poll_desktop(&app);
+            poll_plugins(&app);
             let expired = app.borrow().notice_until.map(|t| Instant::now() > t).unwrap_or(false);
             if expired {
                 app.borrow_mut().notice_until = None;
@@ -1942,4 +1985,204 @@ fn tray_tick(app: &AppRc) {
     if unread > 0 && collapsed {
         set_collapsed(app, false);
     }
+}
+
+
+// ================================================================ plugins
+
+fn refresh_plugin_rows(app: &AppRc) {
+    let a = app.borrow();
+    let Some(m) = a.main.upgrade() else { return };
+    let rows: Vec<PluginRow> = plugins::first_party()
+        .iter()
+        .map(|p| PluginRow {
+            id: p.id.clone().into(),
+            name: p.name.clone().into(),
+            description: p.description.clone().into(),
+            caps: p.capabilities.join(", ").into(),
+            enabled: a.settings.plugins.contains(&p.id),
+            installed: plugins::exe_for(p).is_some(),
+        })
+        .collect();
+    m.set_plugins(ModelRc::new(VecModel::from(rows)));
+    m.set_can_task(a.host.is_running("todo"));
+    for w in a.chats.values() {
+        w.set_can_task(a.host.is_running("todo"));
+    }
+}
+
+fn start_plugin(app: &AppRc, id: &str) {
+    let Some(man) = plugins::first_party().into_iter().find(|p| p.id == id) else { return };
+    let dir = app.borrow().dir.clone();
+    let res = app.borrow_mut().host.start(&man, &dir);
+    if let Err(e) = res {
+        notice(app, &format!("{}: {e}", man.name));
+        return;
+    }
+    let collapsed = app.borrow().settings.collapsed_gadgets.contains(&man.id);
+    let rows = Rc::new(VecModel::<GadgetRow>::default());
+    let mut a = app.borrow_mut();
+    a.gadget_rows.insert(man.id.clone(), (rows.clone(), vec![]));
+    a.gadgets.push(Gadget { id: man.id.clone().into(), name: man.name.clone().into(), collapsed, rows: ModelRc::from(rows) });
+}
+
+fn stop_plugin(app: &AppRc, id: &str) {
+    let mut a = app.borrow_mut();
+    a.host.stop(id);
+    a.gadget_rows.remove(id);
+    let idx = (0..a.gadgets.row_count()).find(|i| a.gadgets.row_data(*i).map(|g| g.id == id).unwrap_or(false));
+    if let Some(i) = idx {
+        a.gadgets.remove(i);
+    }
+    if id == "pomodoro" {
+        if let Some((st, away)) = a.plugin_prev_status.take() {
+            a.send(Command::SetStatus(st));
+            a.send(Command::SetAwayMessage(away));
+        }
+    }
+    if id == "player" {
+        a.send(Command::SetNowPlaying(String::new()));
+    }
+}
+
+fn gadget_item(i: &Item) -> GadgetItem {
+    GadgetItem { kind: i.kind.clone().into(), id: i.id.clone().into(), text: i.text.clone().into(), hint: i.hint.clone().into(), value: i.value, checked: i.checked }
+}
+
+/// Replace only the rows that changed, so inputs the user is typing in survive.
+fn apply_view(app: &AppRc, id: &str, items: Vec<Item>) {
+    let mut rows: Vec<Vec<Item>> = vec![];
+    let mut last_row = u32::MAX;
+    for it in items {
+        if it.row != last_row || rows.is_empty() {
+            rows.push(vec![]);
+            last_row = it.row;
+        }
+        rows.last_mut().unwrap().push(it);
+    }
+    let mut a = app.borrow_mut();
+    let Some((model, old)) = a.gadget_rows.get_mut(id) else { return };
+    for (i, r) in rows.iter().enumerate() {
+        let gr = GadgetRow { items: ModelRc::new(VecModel::from(r.iter().map(gadget_item).collect::<Vec<_>>())) };
+        if i < old.len() {
+            if &old[i] != r {
+                model.set_row_data(i, gr);
+            }
+        } else {
+            model.push(gr);
+        }
+    }
+    while model.row_count() > rows.len() {
+        model.remove(model.row_count() - 1);
+    }
+    *old = rows;
+}
+
+fn poll_plugins(app: &AppRc) {
+    let msgs = app.borrow_mut().host.poll();
+    for (id, msg) in msgs {
+        let Some(man) = plugins::first_party().into_iter().find(|p| p.id == id) else { continue };
+        if !plugins::allowed(&man, &msg) {
+            continue;
+        }
+        match msg {
+            ToHost::Hello { .. } => {}
+            ToHost::View { items } => apply_view(app, &id, items),
+            ToHost::Status { status, away } => {
+                let s = match status.as_str() {
+                    "dnd" => Status::DoNotDisturb,
+                    "occupied" => Status::Occupied,
+                    "away" => Status::Away,
+                    _ => Status::Occupied,
+                };
+                let mut a = app.borrow_mut();
+                if a.plugin_prev_status.is_none() {
+                    a.plugin_prev_status = Some((a.my_status, a.my_away.clone()));
+                }
+                a.send(Command::SetAwayMessage(away));
+                a.send(Command::SetStatus(s));
+            }
+            ToHost::RestoreStatus => {
+                let prev = app.borrow_mut().plugin_prev_status.take();
+                if let Some((st, away)) = prev {
+                    let a = app.borrow();
+                    a.send(Command::SetAwayMessage(away));
+                    a.send(Command::SetStatus(st));
+                }
+            }
+            ToHost::NowPlaying { text } => app.borrow().send(Command::SetNowPlaying(text)),
+            ToHost::Notify { title, body } => {
+                if app.borrow().settings.notify {
+                    desktop::notify(&title, &body);
+                }
+            }
+            ToHost::Sound { name } => play(
+                app,
+                match name.as_str() {
+                    "urgent" => desktop::Sound::Urgent,
+                    "online" => desktop::Sound::Online,
+                    "file" => desktop::Sound::File,
+                    "auth" => desktop::Sound::Auth,
+                    _ => desktop::Sound::Message,
+                },
+            ),
+            ToHost::State { state } => app.borrow().send(Command::SyncPluginState { plugin: id.clone(), state: state.to_string() }),
+        }
+    }
+    // A plugin that exited on its own loses its section.
+    let gone: Vec<String> = {
+        let a = app.borrow();
+        a.gadget_rows.keys().filter(|k| !a.host.is_running(k)).cloned().collect()
+    };
+    for id in gone {
+        stop_plugin(app, &id);
+    }
+}
+
+fn wire_plugins(app: &AppRc, main: &MainWindow) {
+    let ap = app.clone();
+    main.on_gadget_click(move |g, id| ap.borrow().host.send(&g, &ToPlugin::Click { id: id.to_string() }));
+    let ap = app.clone();
+    main.on_gadget_input(move |g, id, v| ap.borrow().host.send(&g, &ToPlugin::Input { id: id.to_string(), value: v.to_string() }));
+    let ap = app.clone();
+    main.on_gadget_check(move |g, id, c| ap.borrow().host.send(&g, &ToPlugin::Check { id: id.to_string(), checked: c }));
+    let ap = app.clone();
+    main.on_gadget_collapse(move |g| {
+        let mut a = ap.borrow_mut();
+        let g = g.to_string();
+        let now_collapsed = if let Some(i) = a.settings.collapsed_gadgets.iter().position(|x| *x == g) {
+            a.settings.collapsed_gadgets.remove(i);
+            false
+        } else {
+            a.settings.collapsed_gadgets.push(g.clone());
+            true
+        };
+        save_settings(&a.dir, &a.settings);
+        let idx = (0..a.gadgets.row_count()).find(|i| a.gadgets.row_data(*i).map(|x| x.id == g.as_str()).unwrap_or(false));
+        if let Some(i) = idx {
+            let mut row = a.gadgets.row_data(i).unwrap();
+            row.collapsed = now_collapsed;
+            a.gadgets.set_row_data(i, row);
+        }
+    });
+    let ap = app.clone();
+    main.on_plugin_toggle(move |id, on| {
+        let id = id.to_string();
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.plugins.retain(|x| *x != id);
+            if on {
+                a.settings.plugins.push(id.clone());
+            }
+            save_settings(&a.dir, &a.settings);
+        }
+        if on {
+            if ap.borrow().engine.is_some() {
+                start_plugin(&ap, &id);
+            }
+        } else {
+            stop_plugin(&ap, &id);
+        }
+        refresh_plugin_rows(&ap);
+    });
 }

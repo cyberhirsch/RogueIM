@@ -66,6 +66,7 @@ export component ChatPane inherits Rectangle {
     in property <bool> authorized: true;
     in property <bool> typing;
     in property <[ChatLine]> lines;
+    in property <bool> can-task;
     in-out property <string> reply-id;
     in-out property <string> reply-text;
     in-out property <bool> urgent;
@@ -257,6 +258,13 @@ export component ChatPane inherits Rectangle {
                                     root.selected-id = "";
                                 }
                             }
+                            if root.can-task && root.mode != "notes": LinkText {
+                                text: "[task]";
+                                clicked => {
+                                    root.line-action("task", l.who + "\u{1}" + l.text);
+                                    root.selected-id = "";
+                                }
+                            }
                             LinkText {
                                 text: "[copy]";
                                 clicked => {
@@ -345,6 +353,7 @@ export component ChatWindow inherits Window {
     in property <bool> typing;
     in property <[ChatLine]> lines;
     in property <bool> is-max;
+    in property <bool> can-task;
     in-out property <bool> pinned;
 
     callback send(string, bool, string);
@@ -379,6 +388,7 @@ export component ChatWindow inherits Window {
         authorized: root.authorized;
         typing: root.typing;
         lines: root.lines;
+        can-task: root.can-task;
         send(t, u, r) => { root.send(t, u, r); }
         typed => { root.typed(); }
         line-action(a, i) => { root.line-action(a, i); }

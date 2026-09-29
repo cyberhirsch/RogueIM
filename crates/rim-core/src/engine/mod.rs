@@ -95,6 +95,10 @@ pub enum Command {
     /// Seconds since the last user input (auto-away is decided by the UI and
     /// arrives as SetStatus; this only feeds "background" for presence).
     SetBackground(bool),
+    /// Share what is playing (empty = nothing).
+    SetNowPlaying(String),
+    /// Share a plugin's state with our other devices.
+    SyncPluginState { plugin: String, state: String },
     // invites & contacts
     NewInvite { uses: Option<u32>, ttl_secs: Option<u64>, label: String },
     RevokeInvite { token: String },
@@ -194,6 +198,7 @@ pub enum Event {
     Files(Vec<(String, FileView)>),
     Net(NetView),
     Profile(Profile),
+    PluginState { plugin: String, state: String },
     Settings { auto_reply: bool, read_receipts: bool, relays: Vec<String>, bootstrap: Vec<String>, lan_only: bool, helper: bool, backup_dir: String, backup_hours: u32, backup_keep: u32 },
     /// Another of our devices asked this one to lock.
     Locked,
@@ -274,6 +279,7 @@ pub(crate) struct Engine {
     pub bot: bool,
     pub node: bool,
     pub background: bool,
+    pub now_playing: String,
     pub listen: Vec<Multiaddr>,
     pub external: Vec<Multiaddr>,
     pub presence: HashMap<String, PresenceRec>,
@@ -473,6 +479,13 @@ impl Engine {
             Command::SetBackground(b) => {
                 self.background = b;
                 self.broadcast_presence();
+            }
+            Command::SetNowPlaying(s) => {
+                self.now_playing = s;
+                self.broadcast_presence();
+            }
+            Command::SyncPluginState { plugin, state } => {
+                let _ = self.send_body("self", Body::PluginState { plugin, state, updated: crate::identity::now() }, Some(0));
             }
             Command::NewInvite { uses, ttl_secs, label } => self.new_invite(uses, ttl_secs, label)?,
             Command::RevokeInvite { token } => {
