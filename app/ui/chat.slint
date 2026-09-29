@@ -1,0 +1,103 @@
+import { ListView } from "std-widgets.slint";
+import { Theme, RInput, OsIcon } from "theme.slint";
+
+export struct ChatLine {
+    time: string,
+    who: string,
+    text: string,
+    mine: bool,
+    // "", "queued", "failed"
+    state: string,
+}
+
+export component ChatWindow inherits Window {
+    title: "RogueIM · " + root.name;
+    preferred-width: 480px;
+    preferred-height: 440px;
+    min-width: 300px;
+    min-height: 220px;
+    background: Theme.bg;
+    default-font-family: Theme.font;
+    default-font-size: Theme.fs;
+
+    in property <string> name;
+    in property <string> fp;
+    in property <string> status;
+    in property <color> tint;
+    in property <string> os;
+    in property <string> device;
+    in property <string> badge;
+    in property <string> away;
+    in property <bool> authorized: true;
+    in property <[ChatLine]> lines;
+    callback send(string);
+
+    public function scroll-to-bottom() {
+        list.content-y = min(0px, list.visible-height - list.content-height);
+    }
+
+    VerticalLayout {
+        padding: 6px;
+        spacing: 6px;
+
+        Rectangle {
+            height: 42px;
+            border-width: 1px;
+            border-color: Theme.line;
+            background: Theme.panel;
+            HorizontalLayout {
+                padding: 6px;
+                spacing: 8px;
+                OsIcon { os: root.os; device: root.device; tint: root.tint; badge: root.badge; y: 1px; }
+                VerticalLayout {
+                    Text { text: root.name; color: Theme.fg; font-weight: 700; }
+                    Text { text: root.status + (root.away != "" ? " · " + root.away : ""); color: root.tint; font-size: Theme.small; overflow: elide; }
+                }
+                Rectangle { }
+                Text { text: "e2ee\nolm"; color: Theme.dim; font-size: 9px; horizontal-alignment: right; vertical-alignment: center; }
+            }
+        }
+
+        Rectangle {
+            border-width: 1px;
+            border-color: Theme.line;
+            background: Theme.panel;
+            vertical-stretch: 1;
+            list := ListView {
+                for l in root.lines: HorizontalLayout {
+                    padding-left: 6px;
+                    padding-right: 6px;
+                    padding-top: 1px;
+                    padding-bottom: 1px;
+                    spacing: 6px;
+                    Text { text: l.time; color: Theme.faint; vertical-alignment: top; }
+                    Text { text: "<" + l.who + ">"; color: l.mine ? Theme.accent : Theme.fg; font-weight: 700; vertical-alignment: top; }
+                    TextInput {
+                        horizontal-stretch: 1;
+                        text: l.text;
+                        read-only: true;
+                        single-line: false;
+                        wrap: word-wrap;
+                        color: l.state == "failed" ? Theme.red : (l.state == "queued" ? Theme.dim : Theme.fg);
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.on-accent;
+                    }
+                    if l.state != "": Text { text: l.state == "queued" ? "[q]" : "[!]"; color: l.state == "failed" ? Theme.red : Theme.dim; vertical-alignment: top; }
+                }
+            }
+        }
+
+        input := RInput {
+            placeholder: root.authorized ? "type, Enter to send" : "waiting for authorization…";
+            accepted(t) => {
+                if (root.authorized && t != "") {
+                    root.send(t);
+                    input.text = "";
+                }
+            }
+        }
+        Text { text: "fp " + root.fp; color: Theme.faint; font-size: 9px; }
+    }
+
+    init => { input.focus(); }
+}

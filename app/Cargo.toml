@@ -1,0 +1,20 @@
+[package]
+name = "rogueim"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arboard = "3.6.1"
+directories = "6.0.0"
+raw-window-handle = "0.6"
+rim-core = { version = "0.1.0", path = "../crates/rim-core" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+slint = { version = "1.18", features = ["raw-window-handle-06"] }
+time = { version = "0.3.55", features = ["formatting", "local-offset", "macros"] }
+
+[build-dependencies]
+slint-build = "1.18"
+
+[target."cfg(windows)".dependencies]
+windows-sys = { version = "0.61", features = ["Win32_UI_Shell", "Win32_Foundation", "Win32_UI_WindowsAndMessaging"] }

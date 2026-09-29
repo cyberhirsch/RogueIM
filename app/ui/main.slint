@@ -1,0 +1,320 @@
+import { ListView, ScrollView } from "std-widgets.slint";
+import { Theme, RButton, RInput, OsIcon } from "theme.slint";
+export { ChatWindow, ChatLine } from "chat.slint";
+export { Theme } from "theme.slint";
+
+export struct ContactRow {
+    id: string,
+    name: string,
+    status: string,
+    tint: color,
+    badge: string,
+    os: string,
+    device: string,
+    battery: bool,
+    unread: int,
+    awaiting: bool,
+    away: string,
+    fp: string,
+}
+
+export struct PendingRow {
+    id: string,
+    nick: string,
+    fp: string,
+    text: string,
+}
+
+export component MainWindow inherits Window {
+    title: "RogueIM";
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 280px;
+    preferred-height: 640px;
+    min-width: 220px;
+    min-height: 360px;
+    no-frame: root.docked;
+    always-on-top: true;
+    background: Theme.bg;
+    default-font-family: Theme.font;
+    default-font-size: Theme.fs;
+
+    // login
+    in property <bool> logged-in;
+    in property <bool> new-account;
+    in property <bool> busy;
+    in property <string> login-error;
+    in property <string> profile;
+    // me
+    in property <string> my-nick;
+    in property <string> my-fp;
+    in property <string> my-os;
+    in property <string> my-device;
+    in property <string> my-status;
+    in property <color> my-tint;
+    in property <string> my-badge;
+    in property <[string]> status-labels;
+    // lists
+    in property <[ContactRow]> contacts;
+    in property <[PendingRow]> pending;
+    in property <string> invite;
+    in property <string> notice;
+    in property <bool> docked;
+    in property <string> edge: "right";
+    in property <string> theme-name;
+    // 0 = none, 1 = add contact, 2 = invite
+    in-out property <int> panel: 0;
+
+    callback login(string, string);
+    callback set-status(int);
+    callback new-invite();
+    callback copy-invite();
+    callback add-contact(string, string);
+    callback accept(string);
+    callback deny(string);
+    callback open-chat(string);
+    callback remove-contact(string);
+    callback switch-edge();
+    callback next-theme();
+
+    // ---------- login ----------
+    if !root.logged-in: VerticalLayout {
+        padding: 16px;
+        spacing: 10px;
+        alignment: center;
+        Text { text: "RogueIM"; color: Theme.fg; font-size: 28px; font-weight: 700; horizontal-alignment: center; }
+        Text { text: "serverless · encrypted · retro"; color: Theme.dim; font-size: Theme.small; horizontal-alignment: center; }
+        Text { text: "profile: " + root.profile; color: Theme.faint; font-size: Theme.small; horizontal-alignment: center; }
+        Rectangle { height: 12px; }
+        Text { text: root.new-account ? "> create account" : "> unlock"; color: Theme.accent; }
+        nick := RInput {
+            visible: root.new-account;
+            height: root.new-account ? 24px : 0px;
+            placeholder: "nickname";
+        }
+        pass := RInput {
+            placeholder: "passphrase";
+            password: true;
+            accepted => { root.login(nick.text, pass.text); }
+        }
+        RButton {
+            text: root.busy ? "working…" : (root.new-account ? "create" : "unlock");
+            enabled: !root.busy;
+            clicked => { root.login(nick.text, pass.text); }
+        }
+        Text { text: root.login-error; color: Theme.red; wrap: word-wrap; font-size: Theme.small; }
+        Text {
+            visible: root.new-account;
+            text: "Your identity is a keypair stored on this machine, encrypted with this passphrase. There is no server and no password reset.";
+            color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+        }
+    }
+
+    // ---------- buddy list ----------
+    if root.logged-in: VerticalLayout {
+        padding: 6px;
+        spacing: 6px;
+
+        // header: me
+        Rectangle {
+            height: 44px;
+            border-width: 1px;
+            border-color: Theme.line;
+            background: Theme.panel;
+            HorizontalLayout {
+                padding: 6px;
+                spacing: 8px;
+                OsIcon { os: root.my-os; device: root.my-device; tint: root.my-tint; badge: root.my-badge; y: 2px; }
+                VerticalLayout {
+                    Text { text: root.my-nick; color: Theme.fg; font-weight: 700; overflow: elide; }
+                    status-t := Text {
+                        text: root.my-status + " ▾";
+                        color: root.my-tint;
+                        font-size: Theme.small;
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { status-popup.show(); }
+                        }
+                    }
+                }
+            }
+            status-popup := PopupWindow {
+                x: 44px;
+                y: 40px;
+                width: 150px;
+                Rectangle {
+                    background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.fg;
+                    VerticalLayout {
+                        padding: 4px;
+                        for label[i] in root.status-labels: Rectangle {
+                            height: 20px;
+                            background: sta.has-hover ? Theme.hover : transparent;
+                            Text { x: 4px; text: label; color: Theme.fg; vertical-alignment: center; height: parent.height; }
+                            sta := TouchArea { clicked => { root.set-status(i); } }
+                        }
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 4px;
+            vertical-stretch: 0;
+            RButton { text: "+ add"; clicked => { root.panel = root.panel == 1 ? 0 : 1; } }
+            RButton { text: "invite"; clicked => { root.new-invite(); } }
+            Rectangle { }
+            RButton { text: "theme"; tone: Theme.dim; clicked => { root.next-theme(); } }
+            RButton { text: root.edge == "right" ? "<|" : "|>"; tone: Theme.dim; clicked => { root.switch-edge(); } }
+        }
+
+        // add contact panel
+        if root.panel == 1: Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: Theme.dim;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+                Text { text: "> add contact"; color: Theme.accent; font-size: Theme.small; }
+                inv := RInput { placeholder: "paste rim1:… invite"; }
+                msg := RInput { placeholder: "request message"; text: "Please add me to your list."; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    RButton { text: "request auth"; clicked => { root.add-contact(inv.text, msg.text); inv.text = ""; root.panel = 0; } }
+                    RButton { text: "cancel"; tone: Theme.dim; clicked => { root.panel = 0; } }
+                }
+            }
+        }
+
+        // invite panel
+        if root.panel == 2: Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: Theme.dim;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+                Text { text: "> single-use invite"; color: Theme.accent; font-size: Theme.small; }
+                Rectangle {
+                    height: 64px;
+                    clip: true;
+                    background: Theme.panel;
+                    border-width: 1px;
+                    border-color: Theme.line;
+                    TextInput {
+                        x: 4px; y: 4px;
+                        width: parent.width - 8px; height: parent.height - 8px;
+                        text: root.invite;
+                        read-only: true;
+                        single-line: false;
+                        wrap: char-wrap;
+                        color: Theme.dim;
+                        font-size: 9px;
+                        selection-background-color: Theme.accent;
+                    }
+                }
+                Text { text: "Send this to one person. It works once."; color: Theme.dim; font-size: Theme.small; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    RButton { text: "copy"; clicked => { root.copy-invite(); } }
+                    RButton { text: "new"; clicked => { root.new-invite(); } }
+                    RButton { text: "close"; tone: Theme.dim; clicked => { root.panel = 0; } }
+                }
+            }
+        }
+
+        // authorization requests
+        for p in root.pending: Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: Theme.accent;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 3px;
+                Text { text: "auth request: " + p.nick; color: Theme.accent; font-weight: 700; }
+                Text { text: "\"" + p.text + "\""; color: Theme.fg; wrap: word-wrap; font-size: Theme.small; }
+                Text { text: p.fp; color: Theme.dim; font-size: 9px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    RButton { text: "accept"; clicked => { root.accept(p.id); } }
+                    RButton { text: "deny"; tone: Theme.red; clicked => { root.deny(p.id); } }
+                }
+            }
+        }
+
+        // contacts
+        Rectangle {
+            border-width: 1px;
+            border-color: Theme.line;
+            background: Theme.panel;
+            vertical-stretch: 1;
+            if root.contacts.length == 0: Text {
+                x: 8px; y: 8px; width: parent.width - 16px;
+                text: "No contacts yet.\n\nClick [invite], send the code to a friend, or paste theirs with [+ add].";
+                color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+            }
+            ListView {
+                for c in root.contacts: Rectangle {
+                    height: 38px;
+                    background: row-ta.has-hover ? Theme.hover : transparent;
+                    HorizontalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        spacing: 8px;
+                        OsIcon { os: c.os; device: c.device; tint: c.tint; badge: c.badge; y: 5px; }
+                        VerticalLayout {
+                            alignment: center;
+                            Text {
+                                text: c.name + (c.unread > 0 ? "  (" + c.unread + ")" : "");
+                                color: c.unread > 0 ? Theme.accent : (c.status == "Offline" ? Theme.dim : Theme.fg);
+                                font-weight: c.unread > 0 ? 700 : 400;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: c.awaiting ? "awaiting authorization" : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
+                                color: c.awaiting ? Theme.accent : Theme.dim;
+                                font-size: Theme.small;
+                                overflow: elide;
+                            }
+                        }
+                    }
+                    row-ta := TouchArea {
+                        double-clicked => { root.open-chat(c.id); }
+                        pointer-event(e) => {
+                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                ctx.show();
+                            }
+                        }
+                    }
+                    ctx := PopupWindow {
+                        x: 40px; y: 30px; width: 160px;
+                        Rectangle {
+                            background: Theme.panel; border-width: 1px; border-color: Theme.fg;
+                            VerticalLayout {
+                                padding: 4px;
+                                Rectangle {
+                                    height: 20px;
+                                    background: o-ta.has-hover ? Theme.hover : transparent;
+                                    Text { x: 4px; height: parent.height; vertical-alignment: center; text: "open chat"; color: Theme.fg; }
+                                    o-ta := TouchArea { clicked => { root.open-chat(c.id); } }
+                                }
+                                Rectangle {
+                                    height: 20px;
+                                    background: r-ta.has-hover ? Theme.hover : transparent;
+                                    Text { x: 4px; height: parent.height; vertical-alignment: center; text: "remove contact"; color: Theme.red; }
+                                    r-ta := TouchArea { clicked => { root.remove-contact(c.id); } }
+                                }
+                                Text { x: 4px; text: c.fp; color: Theme.dim; font-size: 9px; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // footer
+        Text { text: root.notice; color: Theme.accent; font-size: Theme.small; wrap: word-wrap; visible: root.notice != ""; }
+        Text { text: "fp " + root.my-fp; color: Theme.faint; font-size: 9px; wrap: word-wrap; }
+    }
+}
