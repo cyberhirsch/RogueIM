@@ -141,7 +141,7 @@ mod imp {
     }
 
     /// Mouse position in physical screen pixels.
-    pub fn cursor(_scale: f32) -> Option<(i32, i32)> {
+    pub fn cursor(_w: &slint::Window) -> Option<(i32, i32)> {
         use windows_sys::Win32::Foundation::POINT;
         use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let mut p = POINT { x: 0, y: 0 };
@@ -212,27 +212,18 @@ mod imp {
         let _ = conn.flush();
     }
 
-    /// Show the bar on every Space (NSWindowCollectionBehaviorCanJoinAllSpaces
-    /// | Stationary); winit has no API for it.
+    /// Show the bar on every Space (winit has no API for it).
     #[cfg(target_os = "macos")]
     fn mac_all_spaces(w: &slint::Window) {
+        use objc2_app_kit::{NSView, NSWindowCollectionBehavior};
         use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        use std::ffi::c_void;
-        #[link(name = "objc")]
-        unsafe extern "C" {
-            fn objc_msgSend();
-            fn sel_registerName(name: *const std::ffi::c_char) -> *const c_void;
-        }
         let wh = w.window_handle();
         let Ok(h) = wh.window_handle() else { return };
         let RawWindowHandle::AppKit(a) = h.as_raw() else { return };
-        unsafe {
-            let get: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
-            let set: extern "C" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(objc_msgSend as *const ());
-            let win = get(a.ns_view.as_ptr(), sel_registerName(c"window".as_ptr()));
-            if !win.is_null() {
-                set(win, sel_registerName(c"setCollectionBehavior:".as_ptr()), 1 | (1 << 4));
-            }
+        // SAFETY: winit's NSView lives as long as the window; Slint calls us on the main thread.
+        let view: &NSView = unsafe { a.ns_view.cast::<NSView>().as_ref() };
+        if let Some(win) = view.window() {
+            win.setCollectionBehavior(NSWindowCollectionBehavior::CanJoinAllSpaces | NSWindowCollectionBehavior::Stationary);
         }
     }
 
@@ -259,7 +250,7 @@ mod imp {
 
     /// Mouse position in physical screen pixels.
     #[cfg(target_os = "linux")]
-    pub fn cursor(_scale: f32) -> Option<(i32, i32)> {
+    pub fn cursor(_w: &slint::Window) -> Option<(i32, i32)> {
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::ConnectionExt;
         thread_local! {
@@ -273,36 +264,30 @@ mod imp {
         })
     }
 
-    /// Mouse position in physical screen pixels (Quartz reports points).
+    /// Mouse position in physical screen pixels. Quartz reports points; each
+    /// monitor has its own scale, so convert with the scale of the monitor the
+    /// mouse is on (winit places monitors at point origin x scale).
     #[cfg(target_os = "macos")]
-    pub fn cursor(scale: f32) -> Option<(i32, i32)> {
-        #[repr(C)]
-        struct CGPoint {
-            x: f64,
-            y: f64,
-        }
-        #[link(name = "CoreGraphics", kind = "framework")]
-        unsafe extern "C" {
-            fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
-            fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
-        }
-        #[link(name = "CoreFoundation", kind = "framework")]
-        unsafe extern "C" {
-            fn CFRelease(cf: *const std::ffi::c_void);
-        }
-        unsafe {
-            let ev = CGEventCreate(std::ptr::null());
-            if ev.is_null() {
-                return None;
-            }
-            let p = CGEventGetLocation(ev);
-            CFRelease(ev);
-            Some(((p.x * scale as f64) as i32, (p.y * scale as f64) as i32))
-        }
+    pub fn cursor(w: &slint::Window) -> Option<(i32, i32)> {
+        use objc2_core_graphics::CGEvent;
+        let ev = CGEvent::new(None)?;
+        let p = CGEvent::location(Some(&ev));
+        let mons = monitors(w);
+        let scale = mons
+            .iter()
+            .map(|m| (m, m.dpi as f64 / 96.0))
+            .find(|(m, sc)| {
+                let (l, t) = (m.left as f64 / sc, m.top as f64 / sc);
+                let (r, b) = (m.right as f64 / sc, m.bottom as f64 / sc);
+                p.x >= l && p.x < r && p.y >= t && p.y < b
+            })
+            .map(|(_, sc)| sc)
+            .unwrap_or(1.0);
+        Some(((p.x * scale) as i32, (p.y * scale) as i32))
     }
 
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
-    pub fn cursor(_scale: f32) -> Option<(i32, i32)> {
+    pub fn cursor(_w: &slint::Window) -> Option<(i32, i32)> {
         None
     }
 }

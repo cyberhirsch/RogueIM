@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleName</key>
+    <string>RogueIM</string>
+    <key>CFBundleDisplayName</key>
+    <string>RogueIM</string>
+    <key>CFBundleIdentifier</key>
+    <string>net.rogueim.RogueIM</string>
+    <key>CFBundleExecutable</key>
+    <string>rogueim</string>
+    <key>CFBundleIconFile</key>
+    <string>RogueIM</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>@VERSION@</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>12.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>RogueIM's player gadget reads and controls Music and Spotify.</string>
+</dict>
+</plist>

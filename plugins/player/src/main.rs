@@ -2,8 +2,9 @@
 //! active and controls it; optionally shares "listening to" with contacts.
 //! * Windows: System Media Transport Controls (Spotify, browsers, VLC, …)
 //! * Linux: MPRIS over D-Bus (any MPRIS player)
-//! * macOS: no public API for other apps' playback; Spotify and Music.app via
-//!   AppleScript.
+//! * macOS: no public API for other apps' playback. Spotify and Music.app are
+//!   read and controlled via AppleScript; any other player is controlled with
+//!   the system media keys (needs Privacy > Accessibility), without titles.
 
 use std::time::Duration;
 
@@ -132,7 +133,7 @@ mod backend {
     }
 
     pub fn act(a: Action) {
-        let Some(app) = app() else { return };
+        let Some(app) = app() else { return media_key(a) };
         let cmd = match a {
             Action::Toggle => "playpause",
             Action::Next => "next track",
@@ -140,6 +141,40 @@ mod backend {
         };
         osa(&format!("tell application \"{app}\" to {cmd}"));
     }
+
+    /// Press and release a media key (play/pause, next, previous) as the
+    /// keyboard would, so whatever player owns the media keys reacts.
+    fn media_key(a: Action) {
+        use objc2_app_kit::{NSEvent, NSEventModifierFlags, NSEventType};
+        use objc2_core_graphics::{CGEvent, CGEventTapLocation};
+        use objc2_foundation::NSPoint;
+        // NX_KEYTYPE_PLAY / NEXT / PREVIOUS from IOKit's ev_keymap.h
+        let key: isize = match a {
+            Action::Toggle => 16,
+            Action::Next => 17,
+            Action::Prev => 18,
+        };
+        for down in [true, false] {
+            let flags = if down { 0xa00 } else { 0xb00 };
+            let ev = NSEvent::otherEventWithType_location_modifierFlags_timestamp_windowNumber_context_subtype_data1_data2(
+                NSEventType::SystemDefined,
+                NSPoint::new(0.0, 0.0),
+                NSEventModifierFlags(flags),
+                0.0,
+                0,
+                None,
+                8, // NX_SUBTYPE_AUX_CONTROL_BUTTONS
+                (key << 16) | flags as isize,
+                -1,
+            );
+            if let Some(cg) = ev.and_then(|e| e.CGEvent()) {
+                CGEvent::post(CGEventTapLocation::HIDEventTap, Some(&cg));
+            }
+        }
+    }
+
+    /// Shown when no scriptable player runs.
+    pub const HINT: &str = "Music/Spotify show titles; other players: buttons only (allow RogueIM in Privacy > Accessibility)";
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
@@ -205,6 +240,10 @@ fn main() {
             items.push(if l.is_empty() { Item::dim("nothing playing", 0) } else { Item::text(&format!("{} {l}", if n.playing { "▶" } else { "❚❚" }), 0) });
             if !n.source.is_empty() {
                 items.push(Item::dim(&n.source, 1));
+            }
+            #[cfg(target_os = "macos")]
+            if n.source.is_empty() {
+                items.push(Item::dim(backend::HINT, 1));
             }
             items.push(Item::button("prev", "|<", 2));
             items.push(Item::button("toggle", if n.playing { "pause" } else { "play" }, 2));

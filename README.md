@@ -15,6 +15,12 @@ Prebuilt archives for Windows x64, Linux x64/arm64 and macOS (universal) are on 
 [releases page](https://github.com/cyberhirsch/RogueIM/releases). Unpack the archive and start
 `rogueim`. Keep the `rim-plugin-*` files next to it if you want the sidebar gadgets.
 
+macOS: open the `.dmg` and drag RogueIM to Applications. The app is not notarized (no Apple developer
+account), so the first start is blocked. Open System Settings → Privacy & Security and click "Open Anyway"
+(on macOS 14 and older, right-click the app and choose Open). The player gadget controls players other than
+Music and Spotify through the media keys; that needs RogueIM under Privacy & Security → Accessibility.
+macOS cannot reserve screen space, so maximised windows go under the bar; "auto-hide the bar" helps.
+
 Linux runtime needs GTK 3, libayatana-appindicator3, libxdo and ALSA (usually preinstalled on desktops).
 
 ## Run from source

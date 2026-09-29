@@ -1518,6 +1518,11 @@ fn main() {
         let backend = if cfg!(target_os = "linux") && std::env::var_os("DISPLAY").is_some() { "winit-x11" } else { "winit" };
         let _ = slint::BackendSelector::new().backend_name(backend.into()).renderer_name("software".into()).select();
     }
+    // Inside RogueIM.app, notifications belong to our bundle (not Terminal's).
+    #[cfg(target_os = "macos")]
+    if std::env::current_exe().map(|p| p.to_string_lossy().contains(".app/Contents/MacOS/")).unwrap_or(false) {
+        let _ = notify_rust::set_application("net.rogueim.RogueIM");
+    }
     let (profile, port) = parse_args();
     let autostarted = std::env::args().any(|a| a == "--autostart");
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
@@ -2387,7 +2392,7 @@ fn autohide_tick(app: &AppRc) {
         return;
     }
     let Some(m) = app.borrow().main.upgrade() else { return };
-    let Some((cx, cy)) = dock::cursor(m.window().scale_factor()) else { return };
+    let Some((cx, cy)) = dock::cursor(m.window()) else { return };
     let (pos, size) = (m.window().position(), m.window().size());
     let inside = cx >= pos.x && cx < pos.x + size.width as i32 && cy >= pos.y && cy < pos.y + size.height as i32;
     if inside || m.get_panel() != 0 || !m.get_logged_in() {
