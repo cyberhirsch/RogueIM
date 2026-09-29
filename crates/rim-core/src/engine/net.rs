@@ -281,6 +281,7 @@ impl Engine {
                 // contact sync can pass it on before its first presence arrives.
                 let pid = peer_id.to_string();
                 let heard: Vec<String> = info.listen_addrs.iter().filter(|a| !is_relayed(a)).map(|a| a.to_string()).collect();
+                self.seen_addrs.insert(pid.clone(), heard.clone());
                 for c in self.p.contacts.iter_mut() {
                     if let Some(d) = c.devices.iter_mut().find(|d| d.entry.peer_id == pid) {
                         for a in &heard {
@@ -322,6 +323,26 @@ impl Engine {
             SwarmEvent::Behaviour(BehaviourEvent::Kad(ev)) => self.on_kad(ev),
             _ => {}
         }
+    }
+
+    /// A contact's device addresses: what we stored plus what identify told
+    /// us, so hints handed on (introductions, groups, sync) are never empty
+    /// just because the first presence has not arrived yet.
+    pub fn known_addrs(&self, c: &super::state::ContactRec) -> Vec<(String, Vec<String>)> {
+        c.devices
+            .iter()
+            .map(|d| {
+                let mut a = d.addrs.clone();
+                for x in self.seen_addrs.get(&d.entry.peer_id).into_iter().flatten() {
+                    if !a.contains(x) {
+                        a.push(x.clone());
+                    }
+                }
+                a.truncate(16);
+                (d.entry.peer_id.clone(), a)
+            })
+            .filter(|(_, a)| !a.is_empty())
+            .collect()
     }
 
     pub fn owner_of_peer(&self, peer: &str) -> Option<String> {

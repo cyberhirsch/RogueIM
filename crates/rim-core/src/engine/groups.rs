@@ -47,7 +47,7 @@ impl Engine {
             bail!("{} has not authorized you", c.petname);
         }
         let devices = c.signed.clone().ok_or_else(|| anyhow!("no signed device list for {} yet", c.petname))?;
-        let addrs = c.devices.iter().map(|d| (d.entry.peer_id.clone(), d.addrs.clone())).collect();
+        let addrs = self.known_addrs(c);
         Ok(GroupMember { account: c.id.clone(), nick: c.petname.clone(), devices, seeds: c.seeds(), addrs, admin: false })
     }
 

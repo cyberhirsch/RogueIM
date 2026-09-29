@@ -289,6 +289,8 @@ pub(crate) struct Engine {
     pub listen: Vec<Multiaddr>,
     pub external: Vec<Multiaddr>,
     pub presence: HashMap<String, PresenceRec>,
+    /// Listen addresses peers told us via identify, by peer id.
+    pub seen_addrs: HashMap<String, Vec<String>>,
     pub typing: HashMap<String, Instant>,
     pub in_flight: HashMap<OutboundRequestId, (String, String, u64)>,
     pub in_flight_set: HashSet<(String, u64)>,

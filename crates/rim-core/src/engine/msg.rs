@@ -1143,7 +1143,7 @@ impl Engine {
             verified: b.verified,
             ts: now(),
             sig: String::new(),
-            addrs: b.addrs(),
+            addrs: self.known_addrs(b),
         };
         let bname = b.petname.clone();
         let aname = a.petname.clone();
@@ -1287,7 +1287,7 @@ impl Engine {
             seeds: c.seeds(),
             authorized: c.authorized,
             updated: c.updated,
-            addrs: c.addrs(),
+            addrs: self.known_addrs(c),
             notify_online: Some(c.notify_online),
             auto_accept: Some(c.auto_accept),
             urgent_allowed: Some(c.urgent_allowed),
