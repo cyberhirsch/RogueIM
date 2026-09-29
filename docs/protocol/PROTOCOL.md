@@ -97,7 +97,7 @@ The Olm plaintext is:
 
 ### 3.3 Bodies
 
-`Body` is an externally tagged enum. Messaging: `Text{id,ts,text,reply_to,urgent,ttl}`, `Edit{id,text}`, `Delete{id}`, `Typing(bool)`, `Receipt{ids}`, `Read{up_to}`, `Presence`, `Profile`, `Introduce`. Account: `AuthRequest`, `AuthAccept`, `AuthDeny`, `Seeds`, `DeviceList`. Files: `FileOffer`, `FileAccept`, `FileDecline`, `FileCancel`. Groups: `GroupInvite`, `GroupUpdate`, `GroupKey`, `GroupMsg`, `GroupLeave`, `GroupSyncReq`, `GroupSync`. Own devices only: `SelfCopy`, `SelfNote`, `SyncContacts`, `SyncSettings`, `SyncRead`, `LinkGrant`, `History`, `Remote`, `PluginState`. Store-and-forward: `Hold`, `Fetch`.
+`Body` is an externally tagged enum. Messaging: `Text{id,ts,text,reply_to,urgent,ttl}`, `Edit{id,text}`, `Delete{id}`, `Typing(bool)`, `Receipt{ids}`, `Read{up_to}`, `Presence`, `Profile`, `Introduce`. Account: `AuthRequest`, `AuthAccept`, `AuthDeny`, `Seeds`, `DeviceList`. Files: `FileOffer`, `FileAccept`, `FileDecline`, `FileCancel`. Groups: `GroupInvite`, `GroupUpdate`, `GroupKey`, `GroupMsg`, `GroupLeave`, `GroupSyncReq`, `GroupSync`. Own devices only: `SelfCopy`, `SelfNote`, `SyncContacts`, `SyncSettings`, `SyncRead`, `LinkGrant`, `History`, `Remote`, `RemoteAck`, `PluginState`. Store-and-forward: `Hold`, `Fetch`.
 
 ### 3.4 Delivery
 
@@ -143,7 +143,9 @@ Each device publishes a kind **30078** (NIP-78) replaceable event authored by `s
 * **Link code** `rimlink2:` + base64url(JSON `{v, peer_id, curve, fallback, name, os, class, seeds, addrs, nonce}`), shown by the new device. Both sides display **six BIP-39 words** = SHA-256 over `peer_id|curve|fallback|nonce`, two bytes per word mod 2048. The user checks they match.
 * A manager adds the device to the device list (version + 1), signs it, and sends `LinkGrant { nick, devices, account_key?, contacts[ContactSync], own_seeds, settings, groups }` (account key only if the new device is made a manager), then `History` chunks (≤ 200 lines), group keys, and the new device list to all contacts and own devices.
 * `ContactSync` and `SettingsSync` are last-writer-wins by `updated` timestamp.
-* **Revocation**: a manager publishes a list without the device. **Remote lock**: `Remote{target, Lock}` from any own device. **Remote wipe**: `Remote{target, Wipe, ts, sig}` with `sig` = account key over `"rim-remote-v2\0" || "target|Wipe|ts"`; the device destroys its key material and state file.
+  `ContactSync` also carries the optional per-contact flags `notify_online`, `auto_accept` and `urgent_allowed`; `SettingsSync` the optional `nick` and `send_typing`. Missing fields leave the receiver's value unchanged.
+* `PluginState{plugin, state, updated}` carries plugin state between own devices. The plugin id `_layout` is reserved for the gadget layout (`{plugins, collapsed, updated}`, newest wins).
+* **Revocation**: a manager publishes a list without the device. **Remote lock**: `Remote{target, Lock}` from any own device. **Remote wipe**: `Remote{target, Wipe, ts, sig}` with `sig` = account key over `"rim-remote-v2\0" || "target|Wipe|ts"`; the device destroys its key material and state file. Before acting, the target sends `RemoteAck{action, ts}` to its own devices, so the sender can show the command as done.
 
 ---
 

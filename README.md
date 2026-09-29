@@ -52,8 +52,8 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Multi-device | Link devices, sync contacts/settings/history/read state, rename, remote lock, revoke (the revoked device wipes its local data) |
 | Backup | Encrypted `.rimb` files (manual or scheduled), restore via passphrase or recovery words, history import |
 | Network | libp2p: QUIC + TCP/Noise, mDNS, Kademlia DHT, AutoNAT, relay v2, hole punching (DCUtR), UPnP, optional helper mode, LAN-only mode |
-| Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), tray, notifications, sounds, global hotkeys, autostart, idle lock |
-| Themes | graphite (default), grey, green, amber |
+| Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), drag & drop files onto chats, tray with your own OS icon, notifications, per-event sounds, rebindable global hotkeys, autostart (optionally hidden), Away on screen lock, idle lock, optional passphrase in the OS keychain |
+| Themes | graphite (default), grey, green, amber; bundled Hack monospace font |
 | Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status |
 | Headless | `rim-cli` as node (relay/DHT/mailbox helper), bot with a local JSON API, one-shot sender |
 
@@ -65,8 +65,8 @@ Invites are single-use by default, expire, and carry a small proof of work.
   node you run yourself (see below) entered under settings → network → bootstrap. Messages still arrive
   through the Nostr mailbox when no direct path exists; files do not.
 - The CalDAV mode of the todo plugin has not been tested against a real server yet.
+- "Remember on this computer" puts the passphrase in the OS keychain; anyone logged in as you can then open RIM. A remote lock removes it.
 - Only the three first-party plugins are loaded. Third-party plugins and plugin signing come later.
-- The gadget layout is per device and is not synced.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
 - No installers yet: archives only.

@@ -1,11 +1,30 @@
 # RogueIM — Product Requirements Document
 
 **Product:** RogueIM (short: RIM)
-**Status:** Draft v0.2 · 2026-09-29
+**Status:** v0.1 alpha built · 2026-09-29 (see §0)
 **License:** GPL-3.0-or-later
 **Stack:** see [TECH_STACK.md](TECH_STACK.md)
 
 ---
+
+## 0. Status of v0.1 (alpha)
+
+All P0 and P1 requirements are implemented, with the deviations below. Everything was built and hand-tested
+on Windows 10; Linux and macOS builds compile in CI but have not been run by hand. Nothing has been audited.
+
+| ID | v0.1 |
+|---|---|
+| ID-2, CT-7 | No QR codes. A desktop cannot scan them and there is no mobile client yet, so they would be for show. Invites, link codes and safety numbers are text to copy or compare. QR returns with the mobile companion. |
+| ID-5 | Nickname, about, location, homepage and interests are available. There is **no avatar**: images conflict with the plain-text rule (MS-9). |
+| CT-4, GD-1 | Folders and plugin sections are reordered with ^ / v buttons, not drag and drop. |
+| CT-8 | Met by construction. The account key *is* the identity, and devices not signed by it are rejected. A different key is a different contact: it arrives as a new authorization request, with a warning when the name matches an existing contact. |
+| MS-5 | Instead of a tabbed window, one chat can be docked into the bar. Clicking a contact switches the docked chat. |
+| DK-2 | **Open.** There is no layer-shell backend. On Wayland the bar runs through XWayland with X11 struts; whether space is reserved depends on the compositor. |
+| DK-5 | Replaced by the owner's design: the bar is always docked. `<` / `>` step through every edge of every monitor (2 monitors = 4 positions), and the position is remembered. |
+| ST-1 | Themes are graphite (default), grey, green and amber. They replace Classic / Terminal / Plain light. The monospace font (Hack) is bundled. |
+| PR-3 | A locked screen sets Away. This is detected on Windows (input desktop), Linux (logind `LockedHint`) and macOS (`ioreg`). |
+| NW-3 | The helper bandwidth cap is enforced per relayed circuit (a byte budget over the circuit lifetime) and takes effect after a restart. |
+| NW-6 | Diagnostics show NAT status, connected peers (named when known), relay circuits, listen and external addresses, Nostr relay health, held mail, and each plugin's network destinations (GD-11). |
 
 ## 1. One-liner
 
@@ -72,7 +91,7 @@ Priority: **P0** = MVP, **P1** = v1.0, **P2** = later.
 | ID-4a | Backup unlocked by passphrase or 24-word recovery key; recovery key offered at account creation | P0 |
 | ID-4b | Scheduled automatic backups to a user-chosen folder, keep last N | P1 |
 | ID-4c | Restore: full (new machine) or history-only (into existing device) | P0 |
-| ID-5 | Profile: nickname, avatar, "about", optional details (ICQ-style info card), shared only with authorized contacts | P1 |
+| ID-5 | Profile: nickname, "about", optional details (ICQ-style info card), shared only with authorized contacts. No avatar (plain text only, MS-9) | P1 |
 | ID-6 | Multiple accounts on one install | P2 |
 | ID-7 | **Multi-device**: one account on several devices (e.g. desktop + laptop). Every device sends and receives all messages, including ones sent from the other devices | P1 |
 | ID-7a | Link a device by scanning a QR / entering a code on an existing device, confirmed by comparing a short word string | P1 |
