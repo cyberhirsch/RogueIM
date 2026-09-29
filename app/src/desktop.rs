@@ -34,8 +34,8 @@ fn tones(notes: &[(f32, u32)]) -> Vec<u8> {
 }
 
 /// Retro "blip ... bloop": notes as (start Hz, end Hz, milliseconds, decay per
-/// second); 0 Hz is a pause. The pitch sags towards the end of a note, the
-/// timbre is a soft square (odd harmonics), like an old sound chip.
+/// second); 0 Hz is a pause. The pitch sags towards the end of a note; the
+/// octave overtone is the loudest part, which makes it bright and nasal.
 fn chirp(notes: &[(f32, f32, u32, f32)]) -> Vec<u8> {
     let rate = RATE as f32;
     let mut samples: Vec<i16> = vec![];
@@ -48,7 +48,7 @@ fn chirp(notes: &[(f32, f32, u32, f32)]) -> Vec<u8> {
             let f = f0 + (f1 - f0) * x.powf(1.6);
             phase += f / rate * std::f32::consts::TAU;
             let env = (i as f32 / (0.004 * rate)).min(1.0) * (-decay * t).exp() * ((n - i) as f32 / (0.025 * rate)).min(1.0);
-            let v = if f0 == 0.0 { 0.0 } else { (phase.sin() + (3.0 * phase).sin() * 0.22 + (5.0 * phase).sin() * 0.08) * 0.22 * env };
+            let v = if f0 == 0.0 { 0.0 } else { (0.55 * phase.sin() + (2.0 * phase).sin() + 0.4 * (3.0 * phase).sin() + 0.15 * (4.0 * phase).sin()) * 0.14 * env };
             samples.push((v * i16::MAX as f32) as i16);
         }
     }
