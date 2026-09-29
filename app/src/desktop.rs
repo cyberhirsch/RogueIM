@@ -5,13 +5,44 @@ use std::io::Cursor;
 
 // ---------------------------------------------------------------- sounds
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Sound {
     Message,
     Urgent,
     Online,
     Auth,
     File,
+}
+
+impl Sound {
+    /// Events in settings order; each has a built-in sound of the same name.
+    pub const ALL: [Sound; 5] = [Sound::Message, Sound::Urgent, Sound::Online, Sound::Auth, Sound::File];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Sound::Message => "message",
+            Sound::Urgent => "urgent",
+            Sound::Online => "online",
+            Sound::Auth => "auth",
+            Sound::File => "file",
+        }
+    }
+
+    pub fn by_name(n: &str) -> Option<Sound> {
+        Sound::ALL.into_iter().find(|s| s.name() == n)
+    }
+}
+
+/// Custom sound files: at most this big (a notification, not an album).
+pub const MAX_SOUND_BYTES: u64 = 2 * 1024 * 1024;
+
+/// Write the built-in sounds as WAV files (`rogueim --export-sounds DIR`).
+pub fn export_sounds(dir: &std::path::Path) -> std::io::Result<()> {
+    std::fs::create_dir_all(dir)?;
+    for s in Sound::ALL {
+        std::fs::write(dir.join(format!("{}.wav", s.name())), wav(s))?;
+    }
+    Ok(())
 }
 
 const RATE: u32 = 22_050;
@@ -104,10 +135,33 @@ impl Audio {
     }
 
     pub fn play(&mut self, s: Sound) {
-        let Some(sink) = &self.sink else { return };
+        self.play_bytes(wav(s));
+    }
+
+    /// Play a sound choice: a built-in name, or "file:<path>" (wav, mp3, ogg,
+    /// flac). A missing or unreadable file falls back to `fallback`.
+    pub fn play_choice(&mut self, choice: &str, fallback: Sound) {
+        if let Some(path) = choice.strip_prefix("file:") {
+            let ok = std::fs::metadata(path).map(|m| m.len() <= MAX_SOUND_BYTES).unwrap_or(false);
+            if let (true, Ok(bytes)) = (ok, std::fs::read(path)) {
+                if self.play_bytes(bytes) {
+                    return;
+                }
+            }
+            return self.play(fallback);
+        }
+        self.play(Sound::by_name(choice).unwrap_or(fallback));
+    }
+
+    fn play_bytes(&mut self, bytes: Vec<u8>) -> bool {
+        let Some(sink) = &self.sink else { return true };
         self.players.retain(|p| !p.empty());
-        if let Ok(p) = rodio::play(sink.mixer(), Cursor::new(wav(s))) {
-            self.players.push(p);
+        match rodio::play(sink.mixer(), Cursor::new(bytes)) {
+            Ok(p) => {
+                self.players.push(p);
+                true
+            }
+            Err(_) => false,
         }
     }
 }

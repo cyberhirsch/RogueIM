@@ -14,6 +14,8 @@ Specs: [docs/PRD.md](docs/PRD.md) · [docs/TECH_STACK.md](docs/TECH_STACK.md) ·
 Prebuilt archives for Windows x64, Linux x64/arm64 and macOS (universal) are on the
 [releases page](https://github.com/cyberhirsch/RogueIM/releases). Unpack the archive and start
 `rogueim`. Keep the `rim-plugin-*` files next to it if you want the sidebar gadgets.
+The `sounds/` folder holds RIM's five built-in sounds as WAV files, to reuse or edit. In settings → alerts,
+each event can use any built-in sound or your own file (wav, mp3, ogg, flac).
 
 macOS: open the `.dmg` and drag RogueIM to Applications. The app is not notarized (no Apple developer
 account), so the first start is blocked. Open System Settings → Privacy & Security and click "Open Anyway"

@@ -55,6 +55,8 @@ struct Settings {
     snd_online: bool,
     snd_auth: bool,
     snd_file: bool,
+    /// Per event (message, urgent, online, auth, file): a built-in sound name or "file:<path>".
+    sound_map: Vec<String>,
     hotkeys: Vec<String>,
     /// When the plugin layout last changed (synced between own devices, newest wins).
     layout_updated: i64,
@@ -86,6 +88,7 @@ impl Default for Settings {
             snd_online: true,
             snd_auth: true,
             snd_file: true,
+            sound_map: desktop::Sound::ALL.iter().map(|s| s.name().to_string()).collect(),
             hotkeys: desktop::DEFAULT_HOTKEYS.iter().map(|s| s.to_string()).collect(),
             layout_updated: 0,
         }
@@ -995,8 +998,37 @@ fn play(app: &AppRc, s: desktop::Sound) {
             }
     };
     if on {
-        app.borrow_mut().audio.play(s);
+        play_event(app, s);
     }
+}
+
+/// Play the sound mapped to an event, ignoring the on/off settings (preview).
+fn play_event(app: &AppRc, s: desktop::Sound) {
+    let i = desktop::Sound::ALL.iter().position(|x| *x == s).unwrap_or(0);
+    let choice = app.borrow().settings.sound_map.get(i).cloned().unwrap_or_else(|| s.name().to_string());
+    app.borrow_mut().audio.play_choice(&choice, s);
+}
+
+fn sound_on(st: &Settings, i: usize) -> bool {
+    [st.snd_msg, st.snd_urgent, st.snd_online, st.snd_auth, st.snd_file][i]
+}
+
+fn sound_rows(app: &AppRc) {
+    let a = app.borrow();
+    let Some(m) = a.main.upgrade() else { return };
+    let rows: Vec<SoundRow> = desktop::Sound::ALL
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let choice = a.settings.sound_map.get(i).cloned().unwrap_or_default();
+            let source = match choice.strip_prefix("file:") {
+                Some(p) => Path::new(p).file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default(),
+                None => format!("rim {choice}"),
+            };
+            SoundRow { label: s.name().into(), on: sound_on(&a.settings, i), source: source.into() }
+        })
+        .collect();
+    m.set_sound_rows(ModelRc::new(VecModel::from(rows)));
 }
 
 /// Occupied / DND: no sounds, no popups (urgent messages excepted, NT-4).
@@ -1511,6 +1543,12 @@ fn shutdown(app: &AppRc) {
 }
 
 fn main() {
+    // Packaging: write the built-in sounds and exit (release archives ship them).
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(i) = args.iter().position(|a| a == "--export-sounds") {
+        let dir = args.get(i + 1).map(PathBuf::from).unwrap_or_else(|| PathBuf::from("sounds"));
+        std::process::exit(if desktop::export_sounds(&dir).is_ok() { 0 } else { 1 });
+    }
     // Software rendering everywhere: crisp at small sizes, low memory, and no
     // GPU-driver surprises (the OpenGL path rendered nothing on some systems).
     // On Linux prefer X11 (incl. XWayland) so the bar can reserve screen space.
@@ -1547,11 +1585,6 @@ fn main() {
     main.set_s_hk_dnd(hk[4].clone());
     main.set_s_start_min(settings.start_min);
     main.set_s_notify_online(settings.notify_online);
-    main.set_s_snd_msg(settings.snd_msg);
-    main.set_s_snd_urgent(settings.snd_urgent);
-    main.set_s_snd_online(settings.snd_online);
-    main.set_s_snd_auth(settings.snd_auth);
-    main.set_s_snd_file(settings.snd_file);
     main.set_s_hide_offline(settings.hide_offline);
     main.set_s_sounds(settings.sounds);
     main.set_s_notify(settings.notify);
@@ -1613,6 +1646,16 @@ fn main() {
         eprintln!("hotkey {e}");
     }
     main.set_gadgets(ModelRc::from(app.borrow().gadgets.clone()));
+    {
+        // Older settings files: fill in the default sound per event.
+        let mut a = app.borrow_mut();
+        for (i, s) in desktop::Sound::ALL.iter().enumerate() {
+            if a.settings.sound_map.len() <= i {
+                a.settings.sound_map.push(s.name().to_string());
+            }
+        }
+    }
+    sound_rows(&app);
     refresh_plugin_rows(&app);
 
     wire_login(&app, &main);
@@ -2069,13 +2112,6 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
                 "read-receipts" => a.send(Command::SetReadReceipts(m.get_s_read_receipts())),
                 "hide-offline" => a.settings.hide_offline = m.get_s_hide_offline(),
                 "sounds" => a.settings.sounds = m.get_s_sounds(),
-                "snd" => {
-                    a.settings.snd_msg = m.get_s_snd_msg();
-                    a.settings.snd_urgent = m.get_s_snd_urgent();
-                    a.settings.snd_online = m.get_s_snd_online();
-                    a.settings.snd_auth = m.get_s_snd_auth();
-                    a.settings.snd_file = m.get_s_snd_file();
-                }
                 "notify" => a.settings.notify = m.get_s_notify(),
                 "notify-online" => a.settings.notify_online = m.get_s_notify_online(),
                 "typing" => a.send(Command::SetSendTyping(m.get_s_typing())),
@@ -2207,6 +2243,66 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
         desktop::forget(&ap.borrow().profile);
         ap.borrow().send(Command::WipeAccount);
     });
+    let ap = app.clone();
+    main.on_sound_toggle(move |i, on| {
+        {
+            let mut a = ap.borrow_mut();
+            let st = &mut a.settings;
+            match i {
+                0 => st.snd_msg = on,
+                1 => st.snd_urgent = on,
+                2 => st.snd_online = on,
+                3 => st.snd_auth = on,
+                _ => st.snd_file = on,
+            }
+            save_settings(&a.dir, &a.settings);
+        }
+        sound_rows(&ap);
+    });
+    let ap = app.clone();
+    main.on_sound_cycle(move |i, dir| {
+        let i = (i as usize).min(4);
+        {
+            let mut a = ap.borrow_mut();
+            let names: Vec<&str> = desktop::Sound::ALL.iter().map(|s| s.name()).collect();
+            let cur = names.iter().position(|n| *n == a.settings.sound_map[i]);
+            let next = match cur {
+                Some(c) => (c as i32 + dir).rem_euclid(names.len() as i32) as usize,
+                None if dir > 0 => 0,
+                None => names.len() - 1,
+            };
+            a.settings.sound_map[i] = names[next].to_string();
+            save_settings(&a.dir, &a.settings);
+        }
+        sound_rows(&ap);
+        play_event(&ap, desktop::Sound::ALL[i]);
+    });
+    let ap = app.clone();
+    main.on_sound_pick(move |i| {
+        let i = (i as usize).min(4);
+        let Some(src) = rfd::FileDialog::new().add_filter("Sound", &["wav", "mp3", "ogg", "flac"]).pick_file() else { return };
+        if std::fs::metadata(&src).map(|m| m.len() > desktop::MAX_SOUND_BYTES).unwrap_or(true) {
+            notice(&ap, "That file is too big for a notification sound (2 MB max).");
+            return;
+        }
+        // Keep a copy in the profile, so the sound survives the original moving.
+        let dir = ap.borrow().dir.join("sounds");
+        let name = format!("{}-{}", desktop::Sound::ALL[i].name(), src.file_name().map(|f| f.to_string_lossy().to_string()).unwrap_or_default());
+        let dst = dir.join(name);
+        if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::copy(&src, &dst)) {
+            notice(&ap, &format!("Could not copy the sound: {e}"));
+            return;
+        }
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.sound_map[i] = format!("file:{}", dst.to_string_lossy());
+            save_settings(&a.dir, &a.settings);
+        }
+        sound_rows(&ap);
+        play_event(&ap, desktop::Sound::ALL[i]);
+    });
+    let ap = app.clone();
+    main.on_sound_play(move |i| play_event(&ap, desktop::Sound::ALL[(i as usize).min(4)]));
     let ap = app.clone();
     main.on_save_hotkeys(move || {
         let Some(m) = ap.borrow().main.upgrade() else { return };

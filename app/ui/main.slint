@@ -42,6 +42,7 @@ export struct GadgetRow { items: [GadgetItem] }
 export struct Gadget { id: string, name: string, collapsed: bool, rows: [GadgetRow] }
 export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool, usage: string, first: bool, last: bool }
 export struct ListRow { kind: string, id: string, name: string }
+export struct SoundRow { label: string, on: bool, source: string }
 
 // One element of a plugin's section, drawn by RogueIM (plugins never render).
 component GadgetItemView inherits Rectangle {
@@ -161,11 +162,7 @@ export component MainWindow inherits Window {
     in-out property <bool> s-start-min;
     in-out property <bool> s-typing: true;
     in-out property <bool> s-notify-online: true;
-    in-out property <bool> s-snd-msg: true;
-    in-out property <bool> s-snd-urgent: true;
-    in-out property <bool> s-snd-online: true;
-    in-out property <bool> s-snd-auth: true;
-    in-out property <bool> s-snd-file: true;
+    in property <[SoundRow]> sound-rows;
     in-out property <string> s-hk-toggle;
     in-out property <string> s-hk-reply;
     in-out property <string> s-hk-notes;
@@ -296,6 +293,10 @@ export component MainWindow inherits Window {
     callback plugin-cancel();
     callback plugin-move(string, int);
     callback save-hotkeys();
+    callback sound-toggle(int, bool);
+    callback sound-cycle(int, int);
+    callback sound-pick(int);
+    callback sound-play(int);
     callback list-clear(string, string);
     callback folder-move(string, int);
     callback folder-delete(string);
@@ -719,12 +720,18 @@ export component MainWindow inherits Window {
                     RCaption { text: "(per contact: right-click → tell me when they come online)"; wrap: word-wrap; }
                     RCheck { text: "sounds"; checked <=> root.s-sounds; toggled => { root.setting-toggled("sounds"); } }
                     if root.s-sounds: VerticalLayout {
-                        padding-left: 14px;
-                        RCheck { text: "message"; checked <=> root.s-snd-msg; toggled => { root.setting-toggled("snd"); } }
-                        RCheck { text: "urgent message"; checked <=> root.s-snd-urgent; toggled => { root.setting-toggled("snd"); } }
-                        RCheck { text: "contact online"; checked <=> root.s-snd-online; toggled => { root.setting-toggled("snd"); } }
-                        RCheck { text: "authorization request"; checked <=> root.s-snd-auth; toggled => { root.setting-toggled("snd"); } }
-                        RCheck { text: "file offered"; checked <=> root.s-snd-file; toggled => { root.setting-toggled("snd"); } }
+                        padding-left: 8px;
+                        spacing: 2px;
+                        for r[i] in root.sound-rows: HorizontalLayout {
+                            spacing: 2px;
+                            RCheck { text: r.label; checked: r.on; width: 84px; toggled(v) => { root.sound-toggle(i, v); } }
+                            Text { text: r.source; color: Theme.dim; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                            RButton { text: "<"; clicked => { root.sound-cycle(i, -1); } }
+                            RButton { text: ">"; clicked => { root.sound-cycle(i, 1); } }
+                            RButton { text: "…"; clicked => { root.sound-pick(i); } }
+                            RButton { text: "▸"; clicked => { root.sound-play(i); } }
+                        }
+                        RCaption { text: "< > built-in sounds · … your own file (wav, mp3, ogg, flac; up to 2 MB) · ▸ listen"; wrap: word-wrap; }
                     }
                     RCaption { text: "Occupied and DND silence everything except urgent messages."; wrap: word-wrap; }
                 }

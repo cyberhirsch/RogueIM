@@ -80,6 +80,7 @@ jobs:
           mkdir -p "dist/$d"
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
           for b in $BINS; do cp "target/release/$b$ext" "dist/$d/"; done
+          "target/release/rogueim$ext" --export-sounds "dist/$d/sounds"
           cp README.md LICENSE "dist/$d/"
           cd dist
           if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$d.zip" "$d" > /dev/null; else tar czf "$d.tar.gz" "$d"; fi
@@ -103,6 +104,7 @@ jobs:
           codesign --force --sign - "$app"
           codesign --verify --strict --verbose=2 "$app"
           cp target/release/rim-cli README.md LICENSE dist/dmg/
+          target/release/rogueim --export-sounds dist/dmg/sounds
           ln -s /Applications dist/dmg/Applications
           hdiutil create -volname RogueIM -srcfolder dist/dmg -ov -format UDZO "dist/RogueIM-${{ matrix.name }}.dmg"
 
