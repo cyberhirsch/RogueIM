@@ -51,6 +51,17 @@ pub struct Persist {
     pub linking: Option<LinkingState>,
     pub seen_mail: Vec<String>,
     pub lock_requested: bool,
+    #[serde(default = "yes")]
+    pub send_typing: bool,
+    /// Remote command status per own device ("lock sent", "locked", ...).
+    #[serde(default)]
+    pub remote_status: HashMap<String, String>,
+    #[serde(default)]
+    pub own_last_seen: HashMap<String, i64>,
+}
+
+fn yes() -> bool {
+    true
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -115,6 +126,10 @@ pub struct ContactRec {
     pub urgent_allowed: bool,
     pub urgent_log: Vec<i64>,
     pub last_auto_reply: i64,
+    #[serde(default = "yes")]
+    pub notify_online: bool,
+    #[serde(default)]
+    pub auto_accept: bool,
 }
 
 impl ContactRec {
@@ -145,6 +160,8 @@ impl ContactRec {
             urgent_allowed: true,
             urgent_log: vec![],
             last_auto_reply: 0,
+            notify_online: true,
+            auto_accept: false,
         };
         c.apply_devices(&card.devices);
         for (peer, s) in seeds {

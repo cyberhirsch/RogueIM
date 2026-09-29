@@ -7230,6 +7230,7 @@ dependencies = [
  "directories",
  "global-hotkey",
  "interprocess",
+ "keyring",
  "notify-rust",
  "raw-window-handle",
  "rfd",

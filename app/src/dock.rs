@@ -141,7 +141,7 @@ mod imp {
     }
 
     /// Mouse position in physical screen pixels.
-    pub fn cursor() -> Option<(i32, i32)> {
+    pub fn cursor(_scale: f32) -> Option<(i32, i32)> {
         use windows_sys::Win32::Foundation::POINT;
         use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
         let mut p = POINT { x: 0, y: 0 };
@@ -231,7 +231,52 @@ mod imp {
         let _ = w;
     }
 
-    pub fn cursor() -> Option<(i32, i32)> {
+    /// Mouse position in physical screen pixels.
+    #[cfg(target_os = "linux")]
+    pub fn cursor(_scale: f32) -> Option<(i32, i32)> {
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::ConnectionExt;
+        thread_local! {
+            static CONN: Option<(x11rb::rust_connection::RustConnection, usize)> = x11rb::connect(None).ok();
+        }
+        CONN.with(|c| {
+            let (conn, screen) = c.as_ref()?;
+            let root = conn.setup().roots.get(*screen)?.root;
+            let r = conn.query_pointer(root).ok()?.reply().ok()?;
+            Some((r.root_x as i32, r.root_y as i32))
+        })
+    }
+
+    /// Mouse position in physical screen pixels (Quartz reports points).
+    #[cfg(target_os = "macos")]
+    pub fn cursor(scale: f32) -> Option<(i32, i32)> {
+        #[repr(C)]
+        struct CGPoint {
+            x: f64,
+            y: f64,
+        }
+        #[link(name = "CoreGraphics", kind = "framework")]
+        unsafe extern "C" {
+            fn CGEventCreate(source: *const std::ffi::c_void) -> *mut std::ffi::c_void;
+            fn CGEventGetLocation(event: *mut std::ffi::c_void) -> CGPoint;
+        }
+        #[link(name = "CoreFoundation", kind = "framework")]
+        unsafe extern "C" {
+            fn CFRelease(cf: *const std::ffi::c_void);
+        }
+        unsafe {
+            let ev = CGEventCreate(std::ptr::null());
+            if ev.is_null() {
+                return None;
+            }
+            let p = CGEventGetLocation(ev);
+            CFRelease(ev);
+            Some(((p.x * scale as f64) as i32, (p.y * scale as f64) as i32))
+        }
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    pub fn cursor(_scale: f32) -> Option<(i32, i32)> {
         None
     }
 }

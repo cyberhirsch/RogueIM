@@ -141,8 +141,25 @@ fn multi_device_link_sync_and_remote_lock() {
         Event::Devices(v) if v.len() == 2 => v.iter().find(|d| !d.this_device).map(|d| d.peer_id.clone()),
         _ => None,
     });
-    a.send(Command::RemoteLock { peer: laptop });
+    // per-contact toggles and the nickname follow to the other device
+    a.send(Command::SetNotifyOnline { id: bob_at_a.clone(), on: false });
+    a2.wait(40, "toggle synced", |e| match e {
+        Event::Contacts(v) => v.iter().find(|c| c.id == bob_at_a && !c.notify_online).map(|_| ()),
+        _ => None,
+    });
+    a.send(Command::SetNick("alice-renamed".into()));
+    a2.wait(40, "nick synced", |e| match e {
+        Event::Settings { nick, .. } if nick == "alice-renamed" => Some(()),
+        _ => None,
+    });
+
+    a.send(Command::RemoteLock { peer: laptop.clone() });
     a2.wait(40, "locked", |e| matches!(e, Event::Locked).then_some(()));
+    // the laptop confirms, and the device list says so
+    a.wait(40, "lock confirmed", |e| match e {
+        Event::Devices(v) => v.iter().find(|d| d.peer_id == laptop && d.remote == "locked").map(|_| ()),
+        _ => None,
+    });
     a.stop();
     b.stop();
 }
@@ -290,12 +307,19 @@ fn introductions() {
     std::thread::sleep(Duration::from_millis(500));
     let (bob_at_a, _) = befriend(&a, &b);
     let (carol_at_a, _) = befriend(&a, &c);
+    a.send(Command::SetVerified { id: carol_at_a.clone(), verified: true });
+    std::thread::sleep(Duration::from_millis(300));
     a.send(Command::Introduce { to: bob_at_a, whom: carol_at_a });
     b.wait(30, "introduction", |e| match e {
         Event::Introductions(v) => v.iter().find(|(_, n, from, _)| n == "carol" && from == "alice").map(|_| ()),
         _ => None,
     });
-    b.send(Command::AcceptIntroduction { index: 0, text: "alice sent me".into() });
+    b.send(Command::AcceptIntroduction { index: 0, text: "alice sent me".into(), trust: true });
+    // bob took over alice's verification of carol
+    b.wait(30, "trusted vouch", |e| match e {
+        Event::Contacts(v) => v.iter().find(|c| c.name == "carol" && c.verified).map(|_| ()),
+        _ => None,
+    });
     let introduced = c.wait(30, "intro request at carol", |e| match e {
         Event::Pending(v) => v.iter().find(|p| p.nick == "bob").map(|p| p.introduced_by.clone()),
         _ => None,

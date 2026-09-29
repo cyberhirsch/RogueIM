@@ -242,6 +242,8 @@ pub enum Body {
     LinkGrant(Box<LinkGrant>),
     History { contact: String, lines: Vec<HistoryLine> },
     Remote(RemoteCommand),
+    /// The target device confirms it carried out a remote command.
+    RemoteAck { action: RemoteAction, ts: i64 },
     /// Plugin state shared between own devices (e.g. the pomodoro timer).
     PluginState { plugin: String, state: String, updated: i64 },
 
@@ -371,6 +373,12 @@ pub struct ContactSync {
     /// Last known addresses per device (hints).
     #[serde(default)]
     pub addrs: Vec<(String, Vec<String>)>,
+    #[serde(default)]
+    pub notify_online: Option<bool>,
+    #[serde(default)]
+    pub auto_accept: Option<bool>,
+    #[serde(default)]
+    pub urgent_allowed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -381,6 +389,10 @@ pub struct SettingsSync {
     pub profile: Option<Profile>,
     pub folders: Option<Vec<String>>,
     pub updated: i64,
+    #[serde(default)]
+    pub nick: Option<String>,
+    #[serde(default)]
+    pub send_typing: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -456,6 +468,10 @@ pub struct ContactView {
     pub introduced_by: String,
     pub profile: Profile,
     pub now_playing: String,
+    pub disappearing: Option<u64>,
+    pub urgent_allowed: bool,
+    pub notify_online: bool,
+    pub auto_accept: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -468,6 +484,8 @@ pub struct DeviceView {
     pub manager: bool,
     pub this_device: bool,
     pub last_seen: i64,
+    /// Last remote command sent to this device and whether it was carried out.
+    pub remote: String,
 }
 
 #[derive(Debug, Clone)]
@@ -561,4 +579,9 @@ pub struct NetView {
     pub helper: bool,
     pub held: usize,
     pub mailbox_last_fetch: i64,
+    /// Connected peers, named where they are contacts or own devices.
+    pub peers: Vec<String>,
+    /// Relay circuits we can be reached through.
+    pub circuits: Vec<String>,
+    pub bandwidth_kbps: u32,
 }

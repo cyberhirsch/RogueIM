@@ -148,10 +148,16 @@ impl Engine {
         if self.p.files.iter().any(|f| f.offer.id == o.id) {
             return;
         }
-        let from = if peer == "self" { "your other device".to_string() } else { self.contact(peer).map(|c| c.petname.clone()).unwrap_or_default() };
+        // Name plus the start of the fingerprint, so the prompt says who really sent it (FT-3).
+        let from = if peer == "self" {
+            "your other device".to_string()
+        } else {
+            self.contact(peer).map(|c| format!("{} [{}]", c.petname, crate::identity::pretty_fingerprint(&c.id).chars().take(9).collect::<String>())).unwrap_or_default()
+        };
         self.file_line(peer, &o.id, false, &o.name, o.ts);
         self.p.files.push(FileRec { offer: o.clone(), peer: peer.to_string(), outgoing: false, path: String::new(), done_chunks: vec![], state: FileState::Offered });
         self.save();
+        let id = o.id.clone();
         self.emit(Event::FileOffered { id: o.id, from, name: o.name, size: o.size });
         if peer != "self" {
             if let Some(c) = self.contact_mut(peer) {
@@ -160,6 +166,12 @@ impl Engine {
             self.emit_contacts();
         }
         self.refresh_file_views(peer);
+        // Per-contact auto-accept goes to the default download folder (FT-3).
+        if peer != "self" && self.contact(peer).map(|c| c.auto_accept && c.authorized).unwrap_or(false) {
+            if let Err(e) = self.accept_file(&id, "") {
+                self.notice(format!("Auto-accept failed: {e:#}"));
+            }
+        }
     }
 
     pub fn accept_file(&mut self, file: &str, dir: &str) -> Result<()> {

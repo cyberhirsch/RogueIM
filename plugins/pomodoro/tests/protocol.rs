@@ -34,6 +34,11 @@ fn pomodoro_talks_the_plugin_protocol() {
     let view = next();
     assert_eq!(view["t"], "view");
     assert!(view["items"].as_array().unwrap().iter().any(|i| i["id"] == "start"));
+    for id in ["long", "every", "sound"] {
+        assert!(view["items"].as_array().unwrap().iter().any(|i| i["id"] == id), "view lacks {id}");
+    }
+    let sound = view["items"].as_array().unwrap().iter().find(|i| i["id"] == "sound").unwrap();
+    assert_eq!(sound["checked"], true, "sound at phase end is on by default");
     send.write_all(b"{\"t\":\"click\",\"id\":\"start\"}\n").unwrap();
     let end = Instant::now() + Duration::from_secs(10);
     let mut got_status = false;

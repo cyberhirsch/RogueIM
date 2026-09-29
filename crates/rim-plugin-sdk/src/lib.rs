@@ -81,6 +81,10 @@ pub enum ToHost {
     Sound { name: String },
     /// capability `settings.sync`: state shared with the user's other devices.
     State { state: serde_json::Value },
+    /// Announce an outbound network destination the plugin talks to (shown in
+    /// the host's diagnostics). Send it once per destination, and again when
+    /// the configured destination changes.
+    Network { host: String, purpose: String },
 }
 
 /// RogueIM -> plugin.
@@ -146,8 +150,29 @@ impl Plugin {
         self.send(&ToHost::View { items });
     }
 
+    /// Announce an outbound network destination ([`ToHost::Network`]).
+    pub fn network(&mut self, host: &str, purpose: &str) {
+        self.send(&ToHost::Network { host: host.into(), purpose: purpose.into() });
+    }
+
     /// Next message from the host, or None after `timeout` (use it to tick).
     pub fn recv(&self, timeout: Duration) -> Option<ToPlugin> {
         self.rx.recv_timeout(timeout).ok()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn network_serde_shape() {
+        let m = ToHost::Network { host: "dav.example.org".into(), purpose: "CalDAV tasks".into() };
+        let s = serde_json::to_string(&m).unwrap();
+        assert_eq!(s, r#"{"t":"network","host":"dav.example.org","purpose":"CalDAV tasks"}"#);
+        match serde_json::from_str::<ToHost>(&s).unwrap() {
+            ToHost::Network { host, purpose } => assert_eq!((host.as_str(), purpose.as_str()), ("dav.example.org", "CalDAV tasks")),
+            other => panic!("unexpected {other:?}"),
+        }
     }
 }

@@ -114,9 +114,15 @@ pub enum Command {
     SetVerified { id: String, verified: bool },
     SafetyNumber { id: String },
     Introduce { to: String, whom: String },
-    AcceptIntroduction { index: usize, text: String },
+    /// `trust`: take over the introducer's verification if they had verified the contact.
+    AcceptIntroduction { index: usize, text: String, trust: bool },
     DismissIntroduction { index: usize },
     SetUrgentAllowed { id: String, allowed: bool },
+    SetNotifyOnline { id: String, on: bool },
+    SetAutoAccept { id: String, on: bool },
+    SetNick(String),
+    SetSendTyping(bool),
+    SetBandwidth(u32),
     // messaging
     SendText { id: String, body: String, reply_to: Option<u64>, urgent: bool },
     EditText { id: String, msg: u64, body: String },
@@ -199,7 +205,7 @@ pub enum Event {
     Net(NetView),
     Profile(Profile),
     PluginState { plugin: String, state: String },
-    Settings { auto_reply: bool, read_receipts: bool, relays: Vec<String>, bootstrap: Vec<String>, lan_only: bool, helper: bool, backup_dir: String, backup_hours: u32, backup_keep: u32 },
+    Settings { auto_reply: bool, read_receipts: bool, relays: Vec<String>, bootstrap: Vec<String>, lan_only: bool, helper: bool, backup_dir: String, backup_hours: u32, backup_keep: u32, nick: String, send_typing: bool, bandwidth_kbps: u32 },
     /// Another of our devices asked this one to lock.
     Locked,
     /// This device was wiped (remotely or by the user); the profile is gone.
@@ -377,6 +383,7 @@ async fn run(cfg: EngineConfig, mut rx: mpsc::UnboundedReceiver<Command>, ev: st
                         e.notice(format!("{err:#}"));
                     }
                     if e.quitting {
+                        e.flush_before_exit().await;
                         if let Some(m) = &e.mailbox { m.shutdown().await; }
                         return Ok(());
                     }
@@ -387,6 +394,7 @@ async fn run(cfg: EngineConfig, mut rx: mpsc::UnboundedReceiver<Command>, ev: st
             _ = fast.tick() => e.files_tick(),
         }
         if e.quitting {
+            e.flush_before_exit().await;
             if let Some(m) = &e.mailbox {
                 m.shutdown().await;
             }
@@ -396,6 +404,18 @@ async fn run(cfg: EngineConfig, mut rx: mpsc::UnboundedReceiver<Command>, ev: st
 }
 
 impl Engine {
+    /// Give requests already on their way (e.g. the confirmation of a remote
+    /// lock) a moment to leave before the swarm is dropped.
+    async fn flush_before_exit(&mut self) {
+        let end = tokio::time::Instant::now() + Duration::from_millis(1500);
+        while !self.in_flight.is_empty() && tokio::time::Instant::now() < end {
+            tokio::select! {
+                ev = self.swarm.select_next_some() => self.on_swarm(ev),
+                _ = tokio::time::sleep(Duration::from_millis(100)) => {}
+            }
+        }
+    }
+
     fn after_start(&mut self) {
         if let Some(l) = &self.p.linking {
             let code = l.code.clone();
@@ -530,7 +550,7 @@ impl Engine {
                 self.emit(Event::SafetyNumber { id, number });
             }
             Command::Introduce { to, whom } => self.introduce(&to, &whom)?,
-            Command::AcceptIntroduction { index, text } => self.accept_introduction(index, &text)?,
+            Command::AcceptIntroduction { index, text, trust } => self.accept_introduction(index, &text, trust)?,
             Command::DismissIntroduction { index } => {
                 if index < self.p.intros.len() {
                     self.p.intros.remove(index);
@@ -539,6 +559,27 @@ impl Engine {
                 self.emit_intros();
             }
             Command::SetUrgentAllowed { id, allowed } => self.update_contact(&id, |c| c.urgent_allowed = allowed)?,
+            Command::SetNotifyOnline { id, on } => self.update_contact(&id, |c| c.notify_online = on)?,
+            Command::SetAutoAccept { id, on } => self.update_contact(&id, |c| c.auto_accept = on)?,
+            Command::SetNick(n) => {
+                let n = n.trim().to_string();
+                if n.is_empty() || n.chars().count() > 40 {
+                    anyhow::bail!("nickname must be 1-40 characters");
+                }
+                self.p.nick = n;
+                self.settings_changed();
+                self.emit_contacts();
+            }
+            Command::SetSendTyping(b) => {
+                self.p.send_typing = b;
+                self.settings_changed();
+            }
+            Command::SetBandwidth(k) => {
+                self.p.net.bandwidth_kbps = k;
+                self.save();
+                self.emit_settings();
+                self.notice("The bandwidth limit applies after a restart.");
+            }
             Command::SendText { id, body, reply_to, urgent } => self.send_text(&id, body, reply_to, urgent)?,
             Command::EditText { id, msg, body } => self.edit_text(&id, msg, body)?,
             Command::DeleteText { id, msg } => self.delete_text(&id, msg)?,

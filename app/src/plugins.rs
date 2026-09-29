@@ -96,6 +96,12 @@ impl Host {
         Ok(())
     }
 
+    /// Resident memory of a running plugin, in bytes.
+    pub fn memory(&self, id: &str) -> Option<u64> {
+        let pid = self.running.get(id)?.child.id();
+        process_memory(pid)
+    }
+
     pub fn send(&self, id: &str, msg: &ToPlugin) {
         let Some(r) = self.running.get(id) else { return };
         if let Some(w) = r.out.lock().unwrap().as_mut() {
@@ -147,6 +153,39 @@ pub fn allowed(m: &Manifest, msg: &ToHost) -> bool {
         ToHost::Status { .. } | ToHost::RestoreStatus => has("presence.set"),
         ToHost::NowPlaying { .. } => has("presence.now_playing"),
         ToHost::State { .. } => has("settings.sync"),
+        ToHost::Network { .. } => m.capabilities.iter().any(|c| c.starts_with("network:")),
         ToHost::Hello { .. } | ToHost::View { .. } | ToHost::Notify { .. } | ToHost::Sound { .. } => true,
     }
+}
+
+#[cfg(windows)]
+fn process_memory(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h.is_null() {
+            return None;
+        }
+        let mut c: PROCESS_MEMORY_COUNTERS = std::mem::zeroed();
+        c.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let ok = GetProcessMemoryInfo(h, &mut c, c.cb) != 0;
+        CloseHandle(h);
+        ok.then_some(c.WorkingSetSize as u64)
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_memory(pid: u32) -> Option<u64> {
+    let s = std::fs::read_to_string(format!("/proc/{pid}/statm")).ok()?;
+    let pages: u64 = s.split_whitespace().nth(1)?.parse().ok()?;
+    Some(pages * 4096)
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
+fn process_memory(pid: u32) -> Option<u64> {
+    let out = std::process::Command::new("ps").args(["-o", "rss=", "-p", &pid.to_string()]).output().ok()?;
+    let kb: u64 = String::from_utf8_lossy(&out.stdout).trim().parse().ok()?;
+    Some(kb * 1024)
 }

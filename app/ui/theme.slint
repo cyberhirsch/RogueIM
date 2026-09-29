@@ -1,3 +1,6 @@
+// Bundled so the retro monospace look is the same on every OS.
+import "../assets/fonts/Hack-Regular.ttf";
+
 // Colour tokens, set from Rust per theme (Graphite default, Grey, Green, Amber).
 // Defaults here = Graphite. One monospace face, hard edges, no gradients.
 
@@ -14,7 +17,7 @@ export global Theme {
     in-out property <color> on-accent: #1e1f22;
     // name colour of the other person in a chat (own name uses accent)
     in-out property <color> other: #6cb6ff;
-    out property <string> font: "Consolas";
+    out property <string> font: "Hack";
     out property <length> fs: 13px;
     out property <length> small: 11px;
 }

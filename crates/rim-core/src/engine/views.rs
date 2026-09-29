@@ -66,6 +66,7 @@ impl Engine {
                         manager: d.entry.manager,
                         this_device: d.entry.peer_id == me,
                         last_seen: d.last_seen,
+                        remote: String::new(),
                     })
                     .collect();
                 ContactView {
@@ -90,10 +91,14 @@ impl Engine {
                     introduced_by: c.introduced_by.clone(),
                     profile: c.profile.clone(),
                     now_playing: best.map(|r| r.pres.now_playing.clone()).unwrap_or_default(),
+                    disappearing: c.disappearing,
+                    urgent_allowed: c.urgent_allowed,
+                    notify_online: c.notify_online,
+                    auto_accept: c.auto_accept,
                 }
             })
             .collect();
-        v.sort_by_key(|c| (c.status == Status::Offline, c.name.to_lowercase()));
+        v.sort_by_key(|c| (status_rank(c.status), c.name.to_lowercase()));
         self.emit(Event::Contacts(v));
     }
 
@@ -169,7 +174,8 @@ impl Engine {
                 status: if d.peer_id == me { self.p.status } else { self.presence.get(&d.peer_id).map(|r| r.pres.status).unwrap_or(Status::Offline) },
                 manager: d.manager,
                 this_device: d.peer_id == me,
-                last_seen: 0,
+                last_seen: if d.peer_id == me { crate::identity::now() } else { self.p.own_last_seen.get(&d.peer_id).copied().unwrap_or(0) },
+                remote: self.p.remote_status.get(&d.peer_id).cloned().unwrap_or_default(),
             })
             .collect();
         self.emit(Event::Devices(v));
@@ -186,6 +192,23 @@ impl Engine {
             backup_dir: self.p.backup.dir.clone(),
             backup_hours: self.p.backup.every_hours,
             backup_keep: self.p.backup.keep,
+            nick: self.p.nick.clone(),
+            send_typing: self.p.send_typing,
+            bandwidth_kbps: self.p.net.bandwidth_kbps,
         });
+    }
+}
+
+/// Buddy-list order: the most reachable first, like ICQ.
+fn status_rank(s: Status) -> u8 {
+    match s {
+        Status::FreeForChat => 0,
+        Status::Online => 1,
+        Status::Occupied => 2,
+        Status::DoNotDisturb => 3,
+        Status::Away => 4,
+        Status::NotAvailable => 5,
+        Status::Invisible => 6,
+        Status::Offline => 7,
     }
 }

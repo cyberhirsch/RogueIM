@@ -99,42 +99,91 @@ pub struct Tray {
     pub show_id: tray_icon::menu::MenuId,
     pub quit_id: tray_icon::menu::MenuId,
     pub status_ids: Vec<(tray_icon::menu::MenuId, rim_core::Status)>,
-    last: (u32, bool),
+    last: (u32, bool, String),
+    os: String,
+    laptop: bool,
 }
 
-/// 32x32 RGBA: a monitor outline in the status colour, filled when `blink`.
-fn tray_rgba(rgb: u32, blink: bool) -> Vec<u8> {
+/// 3x5 pixel glyphs for the OS code on the tray icon (WIN, MAC, UBU, ...).
+fn glyph(c: char) -> [u8; 5] {
+    match c {
+        'A' => [0b010, 0b101, 0b111, 0b101, 0b101],
+        'B' => [0b110, 0b101, 0b110, 0b101, 0b110],
+        'C' => [0b011, 0b100, 0b100, 0b100, 0b011],
+        'D' => [0b110, 0b101, 0b101, 0b101, 0b110],
+        'E' => [0b111, 0b100, 0b110, 0b100, 0b111],
+        'F' => [0b111, 0b100, 0b110, 0b100, 0b100],
+        'I' => [0b111, 0b010, 0b010, 0b010, 0b111],
+        'K' => [0b101, 0b101, 0b110, 0b101, 0b101],
+        'L' => [0b100, 0b100, 0b100, 0b100, 0b111],
+        'M' => [0b101, 0b111, 0b111, 0b101, 0b101],
+        'N' => [0b101, 0b111, 0b111, 0b111, 0b101],
+        'O' => [0b010, 0b101, 0b101, 0b101, 0b010],
+        'P' => [0b110, 0b101, 0b110, 0b100, 0b100],
+        'R' => [0b110, 0b101, 0b110, 0b101, 0b101],
+        'S' => [0b011, 0b100, 0b010, 0b001, 0b110],
+        'T' => [0b111, 0b010, 0b010, 0b010, 0b010],
+        'U' => [0b101, 0b101, 0b101, 0b101, 0b111],
+        'W' => [0b101, 0b101, 0b111, 0b111, 0b101],
+        'X' => [0b101, 0b101, 0b010, 0b101, 0b101],
+        _ => [0b111, 0b101, 0b101, 0b101, 0b111],
+    }
+}
+
+/// 32x32 RGBA: our own OS code inside a monitor or laptop outline, in the
+/// status colour (the same identity icon contacts see); filled when `blink`.
+fn tray_rgba(rgb: u32, blink: bool, os: &str, laptop: bool) -> Vec<u8> {
     let (r, g, b) = ((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8);
     let mut px = vec![0u8; 32 * 32 * 4];
-    let mut set = |x: usize, y: usize| {
+    let mut put = |x: usize, y: usize, on: bool| {
         let i = (y * 32 + x) * 4;
-        px[i..i + 4].copy_from_slice(&[r, g, b, 255]);
+        px[i..i + 4].copy_from_slice(&if on { [r, g, b, 255] } else { [0, 0, 0, 0] });
     };
     for x in 2..30 {
         for t in 0..2 {
-            set(x, 4 + t);
-            set(x, 22 + t);
+            put(x, 4 + t, true);
+            put(x, 22 + t, true);
         }
     }
     for y in 4..24 {
         for t in 0..2 {
-            set(2 + t, y);
-            set(28 + t, y);
+            put(2 + t, y, true);
+            put(28 + t, y, true);
         }
     }
-    for x in 13..19 {
-        for y in 24..27 {
-            set(x, y);
+    if laptop {
+        for x in 0..32 {
+            put(x, 25, true);
+            put(x, 26, true);
         }
-    }
-    for x in 8..24 {
-        set(x, 27);
-        set(x, 28);
+    } else {
+        for x in 13..19 {
+            for y in 24..27 {
+                put(x, y, true);
+            }
+        }
+        for x in 8..24 {
+            put(x, 27, true);
+            put(x, 28, true);
+        }
     }
     if blink {
-        for x in 6..26 {
-            for y in 8..20 {
-                set(x, y);
+        for x in 5..27 {
+            for y in 7..21 {
+                put(x, y, true);
+            }
+        }
+    }
+    // OS code, 3 glyphs of 3x5 scaled by 2, centred in the screen; inverted when blinking.
+    for (n, c) in os.chars().take(3).enumerate() {
+        let rows = glyph(c.to_ascii_uppercase());
+        for (gy, bits) in rows.iter().enumerate() {
+            for gx in 0..3 {
+                if bits & (0b100 >> gx) != 0 {
+                    for (dx, dy) in [(0, 0), (1, 0), (0, 1), (1, 1)] {
+                        put(6 + n * 7 + gx * 2 + dx, 9 + gy * 2 + dy, !blink);
+                    }
+                }
             }
         }
     }
@@ -142,7 +191,7 @@ fn tray_rgba(rgb: u32, blink: bool) -> Vec<u8> {
 }
 
 impl Tray {
-    pub fn new() -> Option<Self> {
+    pub fn new(os: &str, laptop: bool) -> Option<Self> {
         use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
         let menu = Menu::new();
         let show = MenuItem::new("Show / hide RogueIM", true, None);
@@ -157,18 +206,25 @@ impl Tray {
         let _ = menu.append(&PredefinedMenuItem::separator());
         let quit = MenuItem::new("Quit", true, None);
         let _ = menu.append(&quit);
-        let icon = tray_icon::Icon::from_rgba(tray_rgba(0x7cfc9a, false), 32, 32).ok()?;
+        let icon = tray_icon::Icon::from_rgba(tray_rgba(0x7cfc9a, false, os, laptop), 32, 32).ok()?;
         let tray = tray_icon::TrayIconBuilder::new().with_tooltip("RogueIM").with_icon(icon).with_menu(Box::new(menu)).build().ok()?;
-        Some(Tray { icon: Some(tray), show_id: show.id().clone(), quit_id: quit.id().clone(), status_ids, last: (0, false) })
+        Some(Tray { icon: Some(tray), show_id: show.id().clone(), quit_id: quit.id().clone(), status_ids, last: (0, false, String::new()), os: os.to_string(), laptop })
+    }
+
+    /// Our own OS and device class, once known (after unlock).
+    pub fn set_identity(&mut self, os: &str, laptop: bool) {
+        self.os = os.to_string();
+        self.laptop = laptop;
+        self.last.0 = u32::MAX;
     }
 
     pub fn set(&mut self, rgb: u32, blink: bool, tooltip: &str) {
-        if self.last == (rgb, blink) {
+        if self.last.0 == rgb && self.last.1 == blink && self.last.2 == tooltip {
             return;
         }
-        self.last = (rgb, blink);
+        self.last = (rgb, blink, tooltip.to_string());
         if let Some(t) = &self.icon {
-            let _ = t.set_icon(tray_icon::Icon::from_rgba(tray_rgba(rgb, blink), 32, 32).ok());
+            let _ = t.set_icon(tray_icon::Icon::from_rgba(tray_rgba(rgb, blink, &self.os, self.laptop), 32, 32).ok());
             let _ = t.set_tooltip(Some(tooltip));
         }
     }
@@ -186,35 +242,48 @@ pub enum Hotkey {
 }
 
 pub struct Hotkeys {
-    _mgr: Option<global_hotkey::GlobalHotKeyManager>,
+    mgr: Option<global_hotkey::GlobalHotKeyManager>,
+    keys: Vec<global_hotkey::hotkey::HotKey>,
     map: Vec<(u32, Hotkey)>,
 }
 
-pub const HOTKEYS_INFO: &str = "hotkeys: Ctrl+Alt+R show/hide · Ctrl+Alt+M reply to last · Ctrl+Alt+N note to self · Ctrl+Alt+A away · Ctrl+Alt+D do not disturb";
+/// Default bindings, in the order of `Hotkey::ALL`.
+pub const DEFAULT_HOTKEYS: [&str; 5] = ["Ctrl+Alt+R", "Ctrl+Alt+M", "Ctrl+Alt+N", "Ctrl+Alt+A", "Ctrl+Alt+D"];
+
+impl Hotkey {
+    pub const ALL: [Hotkey; 5] = [Hotkey::ToggleBar, Hotkey::ReplyLast, Hotkey::Notes, Hotkey::Away, Hotkey::Dnd];
+}
 
 impl Hotkeys {
     pub fn none() -> Self {
-        Hotkeys { _mgr: None, map: vec![] }
+        Hotkeys { mgr: None, keys: vec![], map: vec![] }
     }
 
-    pub fn new() -> Self {
-        use global_hotkey::hotkey::{Code, HotKey, Modifiers};
-        let Ok(mgr) = global_hotkey::GlobalHotKeyManager::new() else { return Hotkeys { _mgr: None, map: vec![] } };
-        let mods = Some(Modifiers::CONTROL | Modifiers::ALT);
-        let keys = [
-            (HotKey::new(mods, Code::KeyR), Hotkey::ToggleBar),
-            (HotKey::new(mods, Code::KeyM), Hotkey::ReplyLast),
-            (HotKey::new(mods, Code::KeyN), Hotkey::Notes),
-            (HotKey::new(mods, Code::KeyA), Hotkey::Away),
-            (HotKey::new(mods, Code::KeyD), Hotkey::Dnd),
-        ];
-        let mut map = vec![];
-        for (k, h) in keys {
-            if mgr.register(k).is_ok() {
-                map.push((k.id(), h));
+    /// Register the given bindings ("Ctrl+Alt+R"; empty = off). Returns the
+    /// hotkeys and a message for every binding that could not be used.
+    pub fn new(specs: &[String]) -> (Self, Vec<String>) {
+        use global_hotkey::hotkey::HotKey;
+        let Ok(mgr) = global_hotkey::GlobalHotKeyManager::new() else { return (Hotkeys::none(), vec!["global hotkeys are not available here".into()]) };
+        let mut hk = Hotkeys { mgr: None, keys: vec![], map: vec![] };
+        let mut errors = vec![];
+        for (spec, h) in specs.iter().zip(Hotkey::ALL) {
+            let spec = spec.trim();
+            if spec.is_empty() {
+                continue;
+            }
+            match spec.parse::<HotKey>() {
+                Ok(k) => match mgr.register(k) {
+                    Ok(()) => {
+                        hk.keys.push(k);
+                        hk.map.push((k.id(), h));
+                    }
+                    Err(e) => errors.push(format!("{spec}: {e}")),
+                },
+                Err(e) => errors.push(format!("{spec}: {e}")),
             }
         }
-        Hotkeys { _mgr: Some(mgr), map }
+        hk.mgr = Some(mgr);
+        (hk, errors)
     }
 
     pub fn poll(&self) -> Vec<Hotkey> {
@@ -230,6 +299,14 @@ impl Hotkeys {
     }
 }
 
+impl Drop for Hotkeys {
+    fn drop(&mut self) {
+        if let Some(m) = &self.mgr {
+            let _ = m.unregister_all(&self.keys);
+        }
+    }
+}
+
 // ---------------------------------------------------------------- autostart
 
 pub fn set_autostart(profile: &str, on: bool) -> Result<(), String> {
@@ -238,7 +315,7 @@ pub fn set_autostart(profile: &str, on: bool) -> Result<(), String> {
     let al = auto_launch::AutoLaunchBuilder::new()
         .set_app_name(&name)
         .set_app_path(&exe.to_string_lossy())
-        .set_args(&["--profile", profile])
+        .set_args(&["--profile", profile, "--autostart"])
         .build()
         .map_err(|e| e.to_string())?;
     if on { al.enable() } else { al.disable() }.map_err(|e| e.to_string())
@@ -277,5 +354,60 @@ pub fn idle_secs() -> Option<u64> {
     #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
     {
         None
+    }
+}
+
+// ---------------------------------------------------------------- screen lock
+
+/// Is the session's screen locked? None if the platform does not say.
+pub fn screen_locked() -> Option<bool> {
+    #[cfg(windows)]
+    {
+        // The input desktop cannot be opened while the lock screen owns it.
+        use windows_sys::Win32::System::StationsAndDesktops::{CloseDesktop, OpenInputDesktop, DESKTOP_SWITCHDESKTOP};
+        unsafe {
+            let h = OpenInputDesktop(0, 0, DESKTOP_SWITCHDESKTOP);
+            if h.is_null() {
+                return Some(true);
+            }
+            CloseDesktop(h);
+            Some(false)
+        }
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let id = std::env::var("XDG_SESSION_ID").ok()?;
+        let out = std::process::Command::new("loginctl").args(["show-session", &id, "-p", "LockedHint", "--value"]).output().ok()?;
+        Some(String::from_utf8_lossy(&out.stdout).trim() == "yes")
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let out = std::process::Command::new("ioreg").args(["-n", "Root", "-d1", "-a"]).output().ok()?;
+        let s = String::from_utf8_lossy(&out.stdout);
+        Some(s.split("<key>CGSSessionScreenIsLocked</key>").nth(1).map(|r| r.trim_start().starts_with("<true/>")).unwrap_or(false))
+    }
+    #[cfg(not(any(windows, target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+// ---------------------------------------------------------------- passphrase in the OS keychain
+
+fn keychain(profile: &str) -> Option<keyring::Entry> {
+    keyring::Entry::new("RogueIM", profile).ok()
+}
+
+pub fn remembered(profile: &str) -> Option<String> {
+    keychain(profile)?.get_password().ok()
+}
+
+pub fn remember(profile: &str, pass: &str) -> Result<(), String> {
+    keychain(profile).ok_or("no keychain")?.set_password(pass).map_err(|e| e.to_string())
+}
+
+pub fn forget(profile: &str) {
+    if let Some(e) = keychain(profile) {
+        let _ = e.delete_credential();
     }
 }

@@ -1,7 +1,10 @@
 //! Todo plugin (PRD GD-6..8, GD-11): a todo.txt file or CalDAV VTODOs
 //! (Nextcloud, Radicale, Baïkal, iCloud with an app password …). The CalDAV
 //! password lives in the OS keychain. "Add as task" on a chat message lands here.
-//! No network traffic unless CalDAV is configured.
+//! No network traffic unless CalDAV is configured; the CalDAV server's host is
+//! announced to RogueIM so it shows up in diagnostics. Open tasks can be moved
+//! up and down: todo.txt lines are reordered in the file, CalDAV tasks keep a
+//! local order (by UID) in the plugin data dir.
 
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -19,6 +22,8 @@ struct Task {
     href: String,
     ics: String,
     etag: String,
+    /// CalDAV: the VTODO's UID, key of the local order list.
+    uid: String,
 }
 
 #[derive(Default)]
@@ -59,7 +64,7 @@ fn txt_load(path: &str) -> Vec<Task> {
         .map(|(i, l)| {
             let done = l.starts_with("x ");
             let text = if done { l[2..].trim().to_string() } else { l.trim().to_string() };
-            Task { id: i.to_string(), text, done, href: String::new(), ics: String::new(), etag: String::new() }
+            Task { id: i.to_string(), text, done, href: String::new(), ics: String::new(), etag: String::new(), uid: String::new() }
         })
         .collect()
 }
@@ -68,6 +73,57 @@ fn txt_write(path: &str, f: impl FnOnce(&mut Vec<String>)) -> Result<(), String>
     let mut lines: Vec<String> = std::fs::read_to_string(path).unwrap_or_default().lines().map(str::to_string).collect();
     f(&mut lines);
     std::fs::write(path, lines.join("\n") + "\n").map_err(|e| e.to_string())
+}
+
+/// The task shown next to `id` (above if `up`) among tasks with the same done
+/// state, in list order.
+fn neighbor(tasks: &[Task], id: &str, up: bool) -> Option<String> {
+    let t = tasks.iter().find(|t| t.id == id)?;
+    let group: Vec<&Task> = tasks.iter().filter(|x| x.done == t.done).collect();
+    let i = group.iter().position(|x| x.id == id)?;
+    let j = if up { i.checked_sub(1)? } else { i + 1 };
+    group.get(j).map(|x| x.id.clone())
+}
+
+/// Move a todo.txt task (id = line index) past its visible neighbour by
+/// swapping the two lines in the file.
+fn txt_move(path: &str, tasks: &[Task], id: &str, up: bool) -> Result<(), String> {
+    let Some(other) = neighbor(tasks, id, up) else { return Ok(()) };
+    let (Ok(i), Ok(j)) = (id.parse::<usize>(), other.parse::<usize>()) else { return Ok(()) };
+    txt_write(path, |l| {
+        if i < l.len() && j < l.len() {
+            l.swap(i, j);
+        }
+    })
+}
+
+// ---------------------------------------------------------------- CalDAV order
+
+fn order_path() -> PathBuf {
+    data_dir().join("todo-order.json")
+}
+
+fn load_order() -> Vec<String> {
+    std::fs::read(order_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+}
+
+fn save_order(order: &[String]) {
+    let _ = std::fs::create_dir_all(data_dir());
+    let _ = std::fs::write(order_path(), serde_json::to_string(order).unwrap_or_default());
+}
+
+/// Sort tasks by their UID's place in `order`; tasks not in it keep their
+/// relative order and go last.
+fn apply_order(tasks: &mut [Task], order: &[String]) {
+    tasks.sort_by_key(|t| order.iter().position(|u| *u == t.uid).unwrap_or(usize::MAX));
+}
+
+/// "host[:port]" of a URL, without scheme, user info or path.
+fn url_host(url: &str) -> String {
+    let url = url.trim();
+    let rest = url.split_once("://").map(|(_, r)| r).unwrap_or(url);
+    let auth = rest.split(['/', '?', '#']).next().unwrap_or("");
+    auth.rsplit_once('@').map(|(_, h)| h).unwrap_or(auth).to_string()
 }
 
 // ---------------------------------------------------------------- CalDAV
@@ -151,7 +207,9 @@ impl Dav {
             }
             let summary = ics_field(&ics, "SUMMARY");
             let status = ics_field(&ics, "STATUS");
-            tasks.push(Task { id: href.clone(), text: summary, done: status == "COMPLETED", href, ics, etag });
+            let uid = ics_field(&ics, "UID");
+            let uid = if uid.is_empty() { href.clone() } else { uid };
+            tasks.push(Task { id: href.clone(), text: summary, done: status == "COMPLETED", href, ics, etag, uid });
         }
         tasks.sort_by_key(|t| (t.done, t.text.to_lowercase()));
         Ok(tasks)
@@ -220,6 +278,8 @@ struct App {
     pass_input: String,
     mtime: Option<SystemTime>,
     last_sync: u64,
+    /// CalDAV host last announced with ToHost::Network ("" = none).
+    announced: String,
 }
 
 impl App {
@@ -236,7 +296,8 @@ impl App {
                 self.status = format!("{} open", self.tasks.iter().filter(|t| !t.done).count());
             }
             "caldav" => match self.dav().map(|d| d.list()) {
-                Some(Ok(t)) => {
+                Some(Ok(mut t)) => {
+                    apply_order(&mut t, &load_order());
                     self.tasks = t;
                     self.status = format!("{} open · synced", self.tasks.iter().filter(|t| !t.done).count());
                 }
@@ -285,6 +346,36 @@ impl App {
         self.reload();
     }
 
+    fn move_task(&mut self, id: &str, up: bool) {
+        match self.cfg.backend.as_str() {
+            "txt" => {
+                if let Err(e) = txt_move(&self.cfg.path, &self.tasks, id, up) {
+                    self.status = e;
+                }
+                self.reload();
+            }
+            "caldav" => {
+                let Some(other) = neighbor(&self.tasks, id, up) else { return };
+                let (Some(i), Some(j)) = (self.tasks.iter().position(|t| t.id == id), self.tasks.iter().position(|t| t.id == other)) else { return };
+                self.tasks.swap(i, j);
+                save_order(&self.tasks.iter().map(|t| t.uid.clone()).collect::<Vec<_>>());
+            }
+            _ => {}
+        }
+    }
+
+    /// Tell RogueIM which server we talk to, once per connection and again
+    /// when the configured server changes.
+    fn announce(&mut self, p: &mut Plugin) {
+        let host = if self.cfg.backend == "caldav" { url_host(&self.cfg.url) } else { String::new() };
+        if host != self.announced {
+            if !host.is_empty() {
+                p.network(&host, "CalDAV tasks");
+            }
+            self.announced = host;
+        }
+    }
+
     fn view(&self, p: &mut Plugin) {
         let mut items = vec![];
         let b = self.cfg.backend.as_str();
@@ -305,6 +396,10 @@ impl App {
         let mut row = 10;
         for t in self.tasks.iter().filter(|t| !t.done).chain(self.tasks.iter().filter(|t| t.done).take(5)) {
             items.push(Item::check(&format!("t:{}", t.id), &t.text, t.done, row));
+            if !t.done {
+                items.push(Item::button(&format!("up:{}", t.id), "^", row));
+                items.push(Item::button(&format!("down:{}", t.id), "v", row));
+            }
             row += 1;
         }
         if !b.is_empty() {
@@ -326,7 +421,8 @@ fn main() {
         eprintln!("rim-plugin-todo is started by RogueIM (settings > plugins).");
         std::process::exit(2);
     };
-    let mut a = App { cfg: load_config(), tasks: vec![], status: String::new(), new_text: String::new(), pass_input: String::new(), mtime: None, last_sync: 0 };
+    let mut a = App { cfg: load_config(), tasks: vec![], status: String::new(), new_text: String::new(), pass_input: String::new(), mtime: None, last_sync: 0, announced: String::new() };
+    a.announce(&mut p);
     a.reload();
     a.view(&mut p);
     loop {
@@ -355,7 +451,13 @@ fn main() {
                     }
                     a.reload();
                 }
-                _ => {}
+                _ => {
+                    if let Some(t) = id.strip_prefix("up:") {
+                        a.move_task(t, true);
+                    } else if let Some(t) = id.strip_prefix("down:") {
+                        a.move_task(t, false);
+                    }
+                }
             },
             Some(ToPlugin::Input { id, value }) => match id.as_str() {
                 "path" => {
@@ -392,6 +494,65 @@ fn main() {
                 }
             }
         }
+        a.announce(&mut p);
         a.view(&mut p);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp(name: &str, body: &str) -> String {
+        let p = std::env::temp_dir().join(format!("rim-todo-test-{}-{name}.txt", std::process::id()));
+        std::fs::write(&p, body).unwrap();
+        p.to_string_lossy().to_string()
+    }
+
+    fn id_of(path: &str, text: &str) -> String {
+        txt_load(path).into_iter().find(|t| t.text == text).unwrap().id
+    }
+
+    fn texts(path: &str) -> Vec<String> {
+        txt_load(path).into_iter().map(|t| t.text).collect()
+    }
+
+    #[test]
+    fn txt_move_swaps_lines_in_the_file() {
+        let path = tmp("move", "a\nb\nc\n");
+        txt_move(&path, &txt_load(&path), &id_of(&path, "c"), true).unwrap();
+        assert_eq!(texts(&path), ["a", "c", "b"]);
+        txt_move(&path, &txt_load(&path), &id_of(&path, "a"), false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "c\na\nb\n");
+        // Edges are no-ops.
+        txt_move(&path, &txt_load(&path), &id_of(&path, "c"), true).unwrap();
+        txt_move(&path, &txt_load(&path), &id_of(&path, "b"), false).unwrap();
+        assert_eq!(texts(&path), ["c", "a", "b"]);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn txt_move_skips_done_tasks_and_blank_lines() {
+        let path = tmp("skip", "a\nx done\n\nb\n");
+        txt_move(&path, &txt_load(&path), &id_of(&path, "b"), true).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "b\nx done\n\na\n");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn caldav_order_by_uid() {
+        let t = |uid: &str| Task { id: format!("/{uid}.ics"), text: uid.into(), done: false, href: String::new(), ics: String::new(), etag: String::new(), uid: uid.into() };
+        let mut tasks = vec![t("a"), t("b"), t("c"), t("new")];
+        apply_order(&mut tasks, &["c".into(), "a".into(), "b".into()]);
+        assert_eq!(tasks.iter().map(|t| t.uid.as_str()).collect::<Vec<_>>(), ["c", "a", "b", "new"]);
+        assert_eq!(neighbor(&tasks, "/a.ics", true).as_deref(), Some("/c.ics"));
+        assert_eq!(neighbor(&tasks, "/c.ics", true), None);
+    }
+
+    #[test]
+    fn host_of_caldav_url() {
+        assert_eq!(url_host("https://cloud.example.org/remote.php/dav/calendars/me/tasks/"), "cloud.example.org");
+        assert_eq!(url_host("http://user@nas.local:5232/me/tasks"), "nas.local:5232");
+        assert_eq!(url_host("  "), "");
     }
 }

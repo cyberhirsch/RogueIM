@@ -25,12 +25,14 @@ export struct ContactRow {
     collapsed: bool,
     count: int,
     music: string,
+    // other online devices, shown on hover
+    devs: string,
 }
 
 export struct PendingRow { id: string, nick: string, fp: string, text: string, introduced-by: string, warning: string }
 export struct IntroRow { index: int, name: string, from: string, verified: bool }
 export struct InviteRow { token: string, label: string, info: string, code: string }
-export struct DeviceRow { peer: string, name: string, os: string, device: string, status: string, tint: color, manager: bool, this: bool }
+export struct DeviceRow { peer: string, name: string, os: string, device: string, status: string, tint: color, manager: bool, this: bool, info: string }
 export struct PickRow { id: string, name: string, checked: bool }
 export struct SearchRow { id: string, name: string, time: string, text: string }
 export struct MemberRow { account: string, name: string, admin: bool }
@@ -38,7 +40,8 @@ export struct MemberRow { account: string, name: string, admin: bool }
 export struct GadgetItem { kind: string, id: string, text: string, hint: string, value: float, checked: bool }
 export struct GadgetRow { items: [GadgetItem] }
 export struct Gadget { id: string, name: string, collapsed: bool, rows: [GadgetRow] }
-export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool }
+export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool, usage: string, first: bool, last: bool }
+export struct ListRow { kind: string, id: string, name: string }
 
 // One element of a plugin's section, drawn by RogueIM (plugins never render).
 component GadgetItemView inherits Rectangle {
@@ -153,6 +156,29 @@ export component MainWindow inherits Window {
     in property <string> hotkeys-info;
     in-out property <string> link-input;
     in property <string> link-check-words;
+    in-out property <bool> remember;
+    in-out property <string> invite-n: "5";
+    in-out property <bool> s-start-min;
+    in-out property <bool> s-typing: true;
+    in-out property <bool> s-notify-online: true;
+    in-out property <bool> s-snd-msg: true;
+    in-out property <bool> s-snd-urgent: true;
+    in-out property <bool> s-snd-online: true;
+    in-out property <bool> s-snd-auth: true;
+    in-out property <bool> s-snd-file: true;
+    in-out property <string> s-hk-toggle;
+    in-out property <string> s-hk-reply;
+    in-out property <string> s-hk-notes;
+    in-out property <string> s-hk-away;
+    in-out property <string> s-hk-dnd;
+    in-out property <string> s-nick;
+    in-out property <string> s-bandwidth: "0";
+    in-out property <string> s-link-days;
+    in property <[ListRow]> list-rows;
+    in-out property <string> folder-edit;
+    in-out property <string> folder-edit-text;
+    in property <string> plugin-confirm;
+    in property <string> plugin-confirm-text;
 
     // contact details
     in-out property <string> d-id;
@@ -165,6 +191,8 @@ export component MainWindow inherits Window {
     in-out property <string> d-folder;
     in-out property <bool> d-urgent;
     in-out property <int> d-disappearing;
+    in-out property <bool> d-notify;
+    in-out property <bool> d-auto;
     in property <string> d-introduced;
     in property <string> d-profile;
     in property <string> d-devices;
@@ -211,7 +239,7 @@ export component MainWindow inherits Window {
     callback add-contact(string, string);
     callback accept(string);
     callback deny(string);
-    callback accept-intro(int);
+    callback accept-intro(int, bool);
     callback dismiss-intro(int);
     callback open-chat(string);
     callback select-contact(string);
@@ -234,7 +262,7 @@ export component MainWindow inherits Window {
     callback new-recovery-key();
     callback import-history();
     callback link-changed();
-    callback link-device(bool, bool);
+    callback link-device(bool, bool, string);
     callback device-remove(string, bool);
     callback device-lock(string);
     callback wipe-account();
@@ -264,6 +292,14 @@ export component MainWindow inherits Window {
     callback gadget-check(string, string, bool);
     callback gadget-collapse(string);
     callback plugin-toggle(string, bool);
+    callback plugin-enable(string);
+    callback plugin-cancel();
+    callback plugin-move(string, int);
+    callback save-hotkeys();
+    callback list-clear(string, string);
+    callback folder-move(string, int);
+    callback folder-delete(string);
+    callback folder-rename(string, string);
 
     // ---------------------------------------------------------------- auto-hide strip
     if root.collapsed: Rectangle {
@@ -287,6 +323,7 @@ export component MainWindow inherits Window {
         recovery-words: root.recovery-words;
         link-code: root.link-code;
         link-words: root.link-words;
+        remember <=> root.remember;
         create(n, a, b) => { root.create(n, a, b); }
         unlock(p) => { root.unlock(p); }
         start-link(p) => { root.start-link(p); }
@@ -370,11 +407,12 @@ export component MainWindow inherits Window {
                     RButton { text: "request auth"; clicked => { root.add-contact(inv.text, msg.text); inv.text = ""; root.panel = 0; } }
                     RButton { text: "close"; tone: Theme.dim; clicked => { root.panel = 0; } }
                 }
-                if root.intros.length > 0: RCaption { text: "introductions from your contacts:"; }
+                if root.intros.length > 0: RCaption { text: "introductions from your contacts (add+trust: take over their verification):"; wrap: word-wrap; }
                 for it in root.intros: HorizontalLayout {
                     spacing: 4px;
                     Text { text: it.name + " (by " + it.from + (it.verified ? ", verified" : "") + ")"; color: Theme.fg; font-size: Theme.small; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
-                    RButton { text: "add"; clicked => { root.accept-intro(it.index); } }
+                    RButton { text: "add"; clicked => { root.accept-intro(it.index, false); } }
+                    if it.verified: RButton { text: "add+trust"; clicked => { root.accept-intro(it.index, true); } }
                     RButton { text: "x"; tone: Theme.dim; clicked => { root.dismiss-intro(it.index); } }
                 }
             }
@@ -393,10 +431,16 @@ export component MainWindow inherits Window {
                     spacing: 2px;
                     alignment: start;
                     RTab { text: "once"; active: root.invite-kind == 0; clicked => { root.invite-kind = 0; } }
-                    RTab { text: "5x"; active: root.invite-kind == 1; clicked => { root.invite-kind = 1; } }
+                    RTab { text: "N×"; active: root.invite-kind == 1; clicked => { root.invite-kind = 1; } }
                     RTab { text: "24h"; active: root.invite-kind == 2; clicked => { root.invite-kind = 2; } }
                     RTab { text: "7d"; active: root.invite-kind == 3; clicked => { root.invite-kind = 3; } }
                     RTab { text: "∞"; active: root.invite-kind == 4; clicked => { root.invite-kind = 4; } }
+                }
+                if root.invite-kind == 1: HorizontalLayout {
+                    spacing: 4px;
+                    RCaption { text: "uses:"; vertical-alignment: center; }
+                    RInput { text <=> root.invite-n; width: 50px; }
+                    Rectangle { }
                 }
                 ilabel := RInput { placeholder: "label (who is it for?)"; }
                 RButton { text: "create invite"; clicked => { root.new-invite(root.invite-kind, ilabel.text); } }
@@ -507,6 +551,8 @@ export component MainWindow inherits Window {
                 }
                 RCheck { text: "ignore (drop their messages)"; checked <=> root.d-ignored; }
                 RCheck { text: "urgent messages may break through DND"; checked <=> root.d-urgent; }
+                RCheck { text: "tell me when they come online"; checked <=> root.d-notify; }
+                RCheck { text: "accept their files automatically"; checked <=> root.d-auto; }
                 RCaption { text: "disappearing messages:"; }
                 HorizontalLayout {
                     spacing: 2px;
@@ -576,24 +622,62 @@ export component MainWindow inherits Window {
                     spacing: 1px;
                     alignment: start;
                     RTab { text: "general"; active: root.settings-tab == 0; clicked => { root.settings-tab = 0; } }
+                    RTab { text: "alerts"; active: root.settings-tab == 6; clicked => { root.settings-tab = 6; } }
+                    RTab { text: "keys"; active: root.settings-tab == 7; clicked => { root.settings-tab = 7; } }
+                    RTab { text: "lists"; active: root.settings-tab == 8; clicked => { root.settings-tab = 8; } }
+                    RTab { text: "me"; active: root.settings-tab == 4; clicked => { root.settings-tab = 4; } }
+                }
+                HorizontalLayout {
+                    spacing: 1px;
+                    alignment: start;
                     RTab { text: "net"; active: root.settings-tab == 1; clicked => { root.settings-tab = 1; } }
                     RTab { text: "devices"; active: root.settings-tab == 2; clicked => { root.settings-tab = 2; } }
                     RTab { text: "backup"; active: root.settings-tab == 3; clicked => { root.settings-tab = 3; } }
-                    RTab { text: "me"; active: root.settings-tab == 4; clicked => { root.settings-tab = 4; } }
                     RTab { text: "plugins"; active: root.settings-tab == 5; clicked => { root.settings-tab = 5; } }
                 }
 
+                ScrollView {
+                    height: 360px;
+                    VerticalLayout {
+                    alignment: start;
+                    padding-right: 10px;
+                    spacing: 3px;
+
                 if root.settings-tab == 5: VerticalLayout {
+                    alignment: start;
                     spacing: 4px;
                     RCaption { text: "Plugins run as separate programs, only while enabled, with only the permissions listed."; wrap: word-wrap; }
+                    if root.plugin-confirm != "": Rectangle {
+                        border-width: 1px;
+                        border-color: Theme.accent;
+                        VerticalLayout {
+                            padding: 6px;
+                            spacing: 4px;
+                            Text { text: root.plugin-confirm-text; color: Theme.fg; font-size: Theme.small; wrap: word-wrap; }
+                            HorizontalLayout {
+                                spacing: 4px;
+                                alignment: start;
+                                RButton { text: "enable"; clicked => { root.plugin-enable(root.plugin-confirm); } }
+                                RButton { text: "cancel"; tone: Theme.dim; clicked => { root.plugin-cancel(); } }
+                            }
+                        }
+                    }
                     for pl in root.plugins: VerticalLayout {
-                        RCheck { text: pl.name + (pl.installed ? "" : " (not installed)"); checked: pl.enabled; toggled(v) => { root.plugin-toggle(pl.id, v); } }
+                        HorizontalLayout {
+                            spacing: 3px;
+                            RCheck { text: pl.name + (pl.installed ? "" : " (not installed)"); checked: pl.enabled; toggled(v) => { root.plugin-toggle(pl.id, v); } }
+                            if pl.enabled && !pl.first: RButton { text: "^"; clicked => { root.plugin-move(pl.id, -1); } }
+                            if pl.enabled && !pl.last: RButton { text: "v"; clicked => { root.plugin-move(pl.id, 1); } }
+                        }
                         Text { text: pl.description; color: Theme.fg; font-size: 10px; wrap: word-wrap; }
                         Text { text: "may: " + pl.caps; color: Theme.dim; font-size: 9px; wrap: word-wrap; }
+                        if pl.usage != "": Text { text: pl.usage; color: Theme.dim; font-size: 9px; }
                     }
+                    RCaption { text: "Which plugins are on, their order and folding are shared with your other devices."; wrap: word-wrap; }
                 }
 
                 if root.settings-tab == 0: VerticalLayout {
+                    alignment: start;
                     spacing: 3px;
                     RCaption { text: "theme"; }
                     HorizontalLayout {
@@ -604,12 +688,10 @@ export component MainWindow inherits Window {
                     RCaption { text: "away message (shown when Away / N/A)"; }
                     RInput { text <=> root.away-msg; placeholder: "e.g. back at 14:00"; }
                     RCheck { text: "auto-reply once per hour while away"; checked <=> root.s-auto-reply; toggled => { root.setting-toggled("auto-reply"); } }
-                    RCheck { text: "send read receipts"; checked <=> root.s-read-receipts; toggled => { root.setting-toggled("read-receipts"); } }
                     RCheck { text: "hide offline contacts"; checked <=> root.s-hide-offline; toggled => { root.setting-toggled("hide-offline"); } }
-                    RCheck { text: "sounds"; checked <=> root.s-sounds; toggled => { root.setting-toggled("sounds"); } }
-                    RCheck { text: "desktop notifications"; checked <=> root.s-notify; toggled => { root.setting-toggled("notify"); } }
                     RCheck { text: "open chats on new messages"; checked <=> root.s-popups; toggled => { root.setting-toggled("popups"); } }
                     RCheck { text: "start with the computer"; checked <=> root.s-autostart; toggled => { root.setting-toggled("autostart"); } }
+                    RCheck { text: "start hidden (tray only)"; checked <=> root.s-start-min; toggled => { root.setting-toggled("start-min"); } }
                     RCheck { text: "auto-hide the bar"; checked <=> root.s-autohide; toggled => { root.setting-toggled("autohide"); } }
                     HorizontalLayout {
                         spacing: 4px;
@@ -618,29 +700,111 @@ export component MainWindow inherits Window {
                         RCaption { text: "min, N/A after"; vertical-alignment: center; }
                         RInput { text <=> root.s-auto-na; width: 36px; }
                     }
+                    RCaption { text: "Locking the screen sets Away too."; wrap: word-wrap; }
                     HorizontalLayout {
                         spacing: 4px;
                         RCaption { text: "lock after idle (min, 0=off)"; vertical-alignment: center; }
                         RInput { text <=> root.s-lock-idle; width: 36px; }
                     }
-                    RCaption { text: root.hotkeys-info; wrap: word-wrap; }
                     RButton { text: "save"; clicked => { root.save-general(); } }
                 }
 
+                if root.settings-tab == 6: VerticalLayout {
+                    alignment: start;
+                    spacing: 3px;
+                    RCheck { text: "send read receipts"; checked <=> root.s-read-receipts; toggled => { root.setting-toggled("read-receipts"); } }
+                    RCheck { text: "show others when I am typing"; checked <=> root.s-typing; toggled => { root.setting-toggled("typing"); } }
+                    RCheck { text: "desktop notifications"; checked <=> root.s-notify; toggled => { root.setting-toggled("notify"); } }
+                    RCheck { text: "notify when contacts come online"; checked <=> root.s-notify-online; toggled => { root.setting-toggled("notify-online"); } }
+                    RCaption { text: "(per contact: right-click → tell me when they come online)"; wrap: word-wrap; }
+                    RCheck { text: "sounds"; checked <=> root.s-sounds; toggled => { root.setting-toggled("sounds"); } }
+                    if root.s-sounds: VerticalLayout {
+                        padding-left: 14px;
+                        RCheck { text: "message"; checked <=> root.s-snd-msg; toggled => { root.setting-toggled("snd"); } }
+                        RCheck { text: "urgent message"; checked <=> root.s-snd-urgent; toggled => { root.setting-toggled("snd"); } }
+                        RCheck { text: "contact online"; checked <=> root.s-snd-online; toggled => { root.setting-toggled("snd"); } }
+                        RCheck { text: "authorization request"; checked <=> root.s-snd-auth; toggled => { root.setting-toggled("snd"); } }
+                        RCheck { text: "file offered"; checked <=> root.s-snd-file; toggled => { root.setting-toggled("snd"); } }
+                    }
+                    RCaption { text: "Occupied and DND silence everything except urgent messages."; wrap: word-wrap; }
+                }
+
+                if root.settings-tab == 7: VerticalLayout {
+                    alignment: start;
+                    spacing: 3px;
+                    RCaption { text: "global hotkeys, e.g. Ctrl+Alt+R (empty = off)"; wrap: word-wrap; }
+                    HorizontalLayout { spacing: 4px; RCaption { text: "show / hide bar"; width: 110px; vertical-alignment: center; } RInput { text <=> root.s-hk-toggle; } }
+                    HorizontalLayout { spacing: 4px; RCaption { text: "reply to last"; width: 110px; vertical-alignment: center; } RInput { text <=> root.s-hk-reply; } }
+                    HorizontalLayout { spacing: 4px; RCaption { text: "note to self"; width: 110px; vertical-alignment: center; } RInput { text <=> root.s-hk-notes; } }
+                    HorizontalLayout { spacing: 4px; RCaption { text: "away on/off"; width: 110px; vertical-alignment: center; } RInput { text <=> root.s-hk-away; } }
+                    HorizontalLayout { spacing: 4px; RCaption { text: "DND on/off"; width: 110px; vertical-alignment: center; } RInput { text <=> root.s-hk-dnd; } }
+                    RButton { text: "save keys"; clicked => { root.save-hotkeys(); } }
+                    RCaption { text: root.hotkeys-info; wrap: word-wrap; }
+                }
+
+                if root.settings-tab == 8: VerticalLayout {
+                    alignment: start;
+                    spacing: 3px;
+                    RCaption { text: "folders (top to bottom as in the list)"; }
+                    for f in root.folders: HorizontalLayout {
+                        spacing: 3px;
+                        if root.folder-edit != f: Text { text: f; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                        if root.folder-edit == f: RInput { text <=> root.folder-edit-text; accepted(t) => { root.folder-rename(f, t); } }
+                        if root.folder-edit != f: RButton { text: "ren"; clicked => { root.folder-edit-text = f; root.folder-edit = f; } }
+                        if root.folder-edit == f: RButton { text: "ok"; clicked => { root.folder-rename(f, root.folder-edit-text); } }
+                        RButton { text: "^"; clicked => { root.folder-move(f, -1); } }
+                        RButton { text: "v"; clicked => { root.folder-move(f, 1); } }
+                        RButton { text: "x"; tone: Theme.red; clicked => { root.folder-delete(f); } }
+                    }
+                    if root.folders.length == 0: RCaption { text: "none yet: right-click a contact and type a folder name."; wrap: word-wrap; }
+                    RCaption { text: "visible list: always see you online, even when you are Invisible"; wrap: word-wrap; }
+                    for r in root.list-rows: HorizontalLayout {
+                        visible: r.kind == "visible";
+                        height: r.kind == "visible" ? 22px : 0px;
+                        spacing: 3px;
+                        Text { text: "  " + r.name; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-stretch: 1; }
+                        RButton { text: "x"; clicked => { root.list-clear(r.kind, r.id); } }
+                    }
+                    RCaption { text: "invisible list: never see you online"; wrap: word-wrap; }
+                    for r in root.list-rows: HorizontalLayout {
+                        visible: r.kind == "invisible";
+                        height: r.kind == "invisible" ? 22px : 0px;
+                        spacing: 3px;
+                        Text { text: "  " + r.name; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-stretch: 1; }
+                        RButton { text: "x"; clicked => { root.list-clear(r.kind, r.id); } }
+                    }
+                    RCaption { text: "ignore list: their messages are dropped"; wrap: word-wrap; }
+                    for r in root.list-rows: HorizontalLayout {
+                        visible: r.kind == "ignored";
+                        height: r.kind == "ignored" ? 22px : 0px;
+                        spacing: 3px;
+                        Text { text: "  " + r.name; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-stretch: 1; }
+                        RButton { text: "x"; clicked => { root.list-clear(r.kind, r.id); } }
+                    }
+                    RCaption { text: "Add people to a list: right-click them in the contact list."; wrap: word-wrap; }
+                }
+
                 if root.settings-tab == 1: VerticalLayout {
+                    alignment: start;
                     spacing: 3px;
                     RCheck { text: "LAN only (no Nostr, no internet peers)"; checked <=> root.s-lan-only; toggled => { root.setting-toggled("lan-only"); } }
                     RCheck { text: "help the network (relay & hold mail for others)"; checked <=> root.s-helper; toggled => { root.setting-toggled("helper"); } }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        RCaption { text: "helper limit kbit/s (0 = none)"; vertical-alignment: center; }
+                        RInput { text <=> root.s-bandwidth; width: 60px; }
+                    }
                     RCaption { text: "Nostr relays (one per line)"; }
                     RArea { text <=> root.s-relays; height: 60px; }
                     RCaption { text: "bootstrap / relay nodes (multiaddrs)"; }
                     RArea { text <=> root.s-bootstrap; height: 40px; placeholder: "/ip4/…/tcp/…/p2p/12D3…"; }
                     RButton { text: "save"; clicked => { root.save-network(); } }
                     RCaption { text: "diagnostics"; }
-                    RArea { text: root.net-info; height: 90px; read-only: true; font-size: 9px; }
+                    RArea { text: root.net-info; height: 150px; read-only: true; font-size: 9px; }
                 }
 
                 if root.settings-tab == 2: VerticalLayout {
+                    alignment: start;
                     spacing: 3px;
                     for d in root.devices: VerticalLayout {
                         HorizontalLayout {
@@ -649,6 +813,7 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 Text { text: d.name + (d.this ? " (this)" : ""); color: Theme.fg; font-size: Theme.small; overflow: elide; }
                                 Text { text: d.status + (d.manager ? " · manager" : ""); color: Theme.dim; font-size: 10px; }
+                                if d.info != "": Text { text: d.info; color: Theme.dim; font-size: 9px; overflow: elide; }
                             }
                         }
                         if !d.this: HorizontalLayout {
@@ -667,12 +832,18 @@ export component MainWindow inherits Window {
                         if root.link-check-words != "": RCaption { text: "it must show: " + root.link-check-words; wrap: word-wrap; color: Theme.accent; }
                         lm := RCheck { text: "make it a manager (can link & remove)"; }
                         lh := RCheck { text: "copy chat history"; checked: true; }
-                        RButton { text: "words match — link"; enabled: root.link-check-words != ""; clicked => { root.link-device(lm.checked, lh.checked); } }
+                        if lh.checked: HorizontalLayout {
+                            spacing: 4px;
+                            RCaption { text: "last N days (empty = all)"; vertical-alignment: center; }
+                            RInput { text <=> root.s-link-days; width: 50px; }
+                        }
+                        RButton { text: "words match — link"; enabled: root.link-check-words != ""; clicked => { root.link-device(lm.checked, lh.checked, root.s-link-days); } }
                     }
                     if !root.is-manager: RCaption { text: "Only manager devices can link or remove devices."; wrap: word-wrap; }
                 }
 
                 if root.settings-tab == 3: VerticalLayout {
+                    alignment: start;
                     spacing: 3px;
                     RButton { text: "back up now…"; clicked => { root.backup-now(); } }
                     RCaption { text: "automatic backups to folder"; }
@@ -695,15 +866,20 @@ export component MainWindow inherits Window {
                 }
 
                 if root.settings-tab == 4: VerticalLayout {
+                    alignment: start;
                     spacing: 3px;
+                    RCaption { text: "nickname (a suggestion; your contacts pick their own name for you)"; wrap: word-wrap; }
+                    RInput { text <=> root.s-nick; placeholder: "nickname"; }
                     RCaption { text: "profile (only authorized contacts see it)"; }
                     RInput { text <=> root.s-about; placeholder: "about"; }
                     RInput { text <=> root.s-location; placeholder: "location"; }
                     RInput { text <=> root.s-homepage; placeholder: "homepage"; }
                     RInput { text <=> root.s-interests; placeholder: "interests"; }
-                    RButton { text: "save profile"; clicked => { root.save-profile(); } }
-                    RCaption { text: "profile: " + root.profile + " · fp " + root.my-fp; wrap: word-wrap; font-size: 9px; }
+                    RButton { text: "save"; clicked => { root.save-profile(); } }
+                    RCaption { text: "fingerprint " + root.my-fp; wrap: word-wrap; font-size: 9px; }
                     RButton { text: "wipe this account from this computer"; tone: Theme.red; clicked => { wipe-confirm.show(); } }
+                }
+                    }
                 }
                 RButton { text: "close"; tone: Theme.dim; clicked => { root.panel = 0; } }
             }
@@ -790,7 +966,7 @@ export component MainWindow inherits Window {
                                     overflow: elide;
                                 }
                                 Text {
-                                    text: c.typing ? "typing…" : c.awaiting ? "awaiting authorization" : c.music != "" && c.status != "Offline" ? "♪ " + c.music : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
+                                    text: c.typing ? "typing…" : c.awaiting ? "awaiting authorization" : row-ta.has-hover && c.devs != "" ? c.devs : c.music != "" && c.status != "Offline" ? "♪ " + c.music : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
                                     color: c.awaiting || c.typing ? Theme.accent : Theme.dim;
                                     font-size: Theme.small;
                                     overflow: elide;

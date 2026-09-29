@@ -48,6 +48,16 @@ struct Settings {
     collapsed_folders: Vec<String>,
     plugins: Vec<String>,
     collapsed_gadgets: Vec<String>,
+    start_min: bool,
+    notify_online: bool,
+    snd_msg: bool,
+    snd_urgent: bool,
+    snd_online: bool,
+    snd_auth: bool,
+    snd_file: bool,
+    hotkeys: Vec<String>,
+    /// When the plugin layout last changed (synced between own devices, newest wins).
+    layout_updated: i64,
 }
 
 impl Default for Settings {
@@ -69,6 +79,15 @@ impl Default for Settings {
             collapsed_folders: vec![],
             plugins: vec![],
             collapsed_gadgets: vec![],
+            start_min: false,
+            notify_online: true,
+            snd_msg: true,
+            snd_urgent: true,
+            snd_online: true,
+            snd_auth: true,
+            snd_file: true,
+            hotkeys: desktop::DEFAULT_HOTKEYS.iter().map(|s| s.to_string()).collect(),
+            layout_updated: 0,
         }
     }
 }
@@ -193,6 +212,15 @@ struct App {
     gadget_rows: HashMap<String, (Rc<VecModel<GadgetRow>>, Vec<Vec<Item>>)>,
     plugin_prev_status: Option<(Status, String)>,
     my_away: String,
+    folders: Vec<String>,
+    /// Passphrase to store in the OS keychain once the unlock succeeds.
+    remember_pass: Option<String>,
+    /// Hidden to the tray by the user (not the auto-hide strip).
+    hidden: bool,
+    /// Outbound network destinations announced by plugins: (plugin, host, purpose).
+    plugin_net: Vec<(String, String, String)>,
+    my_os: String,
+    my_laptop: bool,
 }
 
 type AppRc = Rc<RefCell<App>>;
@@ -260,6 +288,7 @@ fn chat_line(app: &App, l: &LineView) -> ChatLine {
             (true, Delivery::Queued) => "queued",
             (true, Delivery::Stored) => "stored",
             (true, Delivery::Read) => "read",
+            (true, Delivery::Delivered) => "delivered",
             (true, Delivery::Failed) => "failed",
             (true, _) => "",
         }
@@ -483,7 +512,19 @@ fn chat_file_send(app: &AppRc, key: &str) {
         return;
     }
     let Some(path) = rfd::FileDialog::new().set_title("Send a file (direct connection only)").pick_file() else { return };
-    let size = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
+    send_path(app, key, &path);
+}
+
+fn send_path(app: &AppRc, key: &str, path: &Path) {
+    if mode_of(key) == "group" {
+        notice(app, "Files go over direct connections only, so not to groups.");
+        return;
+    }
+    if !path.is_file() {
+        notice(app, "Only single files can be sent, not folders.");
+        return;
+    }
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let target = if key == "notes" { "self".to_string() } else { key.to_string() };
     // PRD PR-9: ask before big files to phones or laptops on battery.
     let (warn, name) = {
@@ -564,6 +605,7 @@ fn open_chat(app: &AppRc, key: &str) {
         w.on_file_send(move || chat_file_send(&ap, &k));
         let ap = app.clone();
         w.on_file_action(move |act, f| chat_file_action(&ap, &act, &f));
+        install_file_drop(app, w.window(), Some(key.to_string()));
         let weak = w.as_weak();
         w.on_drag(move |dx, dy| {
             if let Some(w) = weak.upgrade() {
@@ -675,6 +717,7 @@ fn plain_row(kind: &str, id: &str, name: &str, device: &str, tint: Color) -> Con
         collapsed: false,
         count: 0,
         music: "".into(),
+        devs: "".into(),
     }
 }
 
@@ -703,6 +746,7 @@ fn rebuild_contacts(app: &AppRc) {
         collapsed: false,
         count: 0,
         music: c.now_playing.clone().into(),
+        devs: online_devices(c).into(),
     };
     let header = |name: &str, count: usize| {
         let mut r = plain_row("folder", name, name, "", acc);
@@ -723,9 +767,12 @@ fn rebuild_contacts(app: &AppRc) {
         }
     }
     let visible = |c: &&ContactView| !a.settings.hide_offline || c.status != Status::Offline || c.awaiting || c.unread > 0;
-    let mut folders: Vec<String> = a.contacts.iter().map(|c| c.folder.clone()).filter(|f| !f.is_empty()).collect();
-    folders.sort();
-    folders.dedup();
+    // The user's folder order first, then folders only known from contacts.
+    let mut folders: Vec<String> = a.folders.clone();
+    let mut extra: Vec<String> = a.contacts.iter().map(|c| c.folder.clone()).filter(|f| !f.is_empty() && !folders.contains(f)).collect();
+    extra.sort();
+    extra.dedup();
+    folders.extend(extra);
     let needs_headers = !folders.is_empty() || !a.groups.is_empty();
     let unfiled: Vec<&ContactView> = a.contacts.iter().filter(|c| c.folder.is_empty()).filter(visible).collect();
     if needs_headers {
@@ -742,6 +789,31 @@ fn rebuild_contacts(app: &AppRc) {
         }
     }
     m.set_contacts(ModelRc::new(VecModel::from(rows)));
+}
+
+/// All online devices of a contact, when there is more than one (PR-7, on hover).
+fn online_devices(c: &ContactView) -> String {
+    let on: Vec<String> = c.devices.iter().filter(|d| d.status != Status::Offline).map(|d| format!("{} {}", d.os, d.class.as_str())).collect();
+    if on.len() > 1 { format!("online on: {}", on.join(", ")) } else { String::new() }
+}
+
+/// Visible / invisible / ignore lists for the settings "lists" tab (CT-6).
+fn list_rows(app: &AppRc) {
+    let a = app.borrow();
+    let Some(m) = a.main.upgrade() else { return };
+    let mut rows = vec![];
+    for c in &a.contacts {
+        let row = |kind: &str| ListRow { kind: kind.into(), id: c.id.clone().into(), name: c.name.clone().into() };
+        match c.visibility {
+            Visibility::Visible => rows.push(row("visible")),
+            Visibility::Invisible => rows.push(row("invisible")),
+            Visibility::Normal => {}
+        }
+        if c.ignored {
+            rows.push(row("ignored"));
+        }
+    }
+    m.set_list_rows(ModelRc::new(VecModel::from(rows)));
 }
 
 fn pick_rows(app: &AppRc, exclude: &[String]) {
@@ -776,8 +848,16 @@ fn show_details(app: &AppRc, id: &str) {
     });
     m.set_d_ignored(c.ignored);
     m.set_d_folder(c.folder.clone().into());
-    m.set_d_urgent(true);
-    m.set_d_disappearing(0);
+    m.set_d_urgent(c.urgent_allowed);
+    m.set_d_notify(c.notify_online);
+    m.set_d_auto(c.auto_accept);
+    m.set_d_disappearing(match c.disappearing {
+        Some(300) => 1,
+        Some(3600) => 2,
+        Some(86_400) => 3,
+        Some(604_800) => 4,
+        _ => 0,
+    });
     m.set_d_introduced(c.introduced_by.clone().into());
     let p = &c.profile;
     let prof = [&p.about, &p.location, &p.homepage, &p.interests].iter().filter(|s| !s.is_empty()).map(|s| s.as_str()).collect::<Vec<_>>().join(" · ");
@@ -903,10 +983,25 @@ fn lock(app: &AppRc, reason: &str) {
 }
 
 fn play(app: &AppRc, s: desktop::Sound) {
-    let on = app.borrow().settings.sounds;
+    let on = {
+        let st = &app.borrow().settings;
+        st.sounds
+            && match s {
+                desktop::Sound::Message => st.snd_msg,
+                desktop::Sound::Urgent => st.snd_urgent,
+                desktop::Sound::Online => st.snd_online,
+                desktop::Sound::Auth => st.snd_auth,
+                desktop::Sound::File => st.snd_file,
+            }
+    };
     if on {
         app.borrow_mut().audio.play(s);
     }
+}
+
+/// Occupied / DND: no sounds, no popups (urgent messages excepted, NT-4).
+fn busy(app: &AppRc) -> bool {
+    app.borrow().my_status.is_busy()
 }
 
 fn handle_event(app: &AppRc, ev: Event) {
@@ -938,6 +1033,11 @@ fn handle_event(app: &AppRc, ev: Event) {
         }
         Event::LoginFailed(msg) => {
             let mut a = app.borrow_mut();
+            if a.remember_pass.take().is_some() || m.get_remember() {
+                // A remembered passphrase that no longer works is useless.
+                desktop::forget(&a.profile);
+                m.set_remember(false);
+            }
             a.engine = None;
             a.rx = None;
             m.set_new_account(!Store::exists(&a.dir));
@@ -955,6 +1055,7 @@ fn handle_event(app: &AppRc, ev: Event) {
         Event::Contacts(list) => {
             app.borrow_mut().contacts = list;
             rebuild_contacts(app);
+            list_rows(app);
             refresh_all_chats(app);
         }
         Event::Pending(list) => {
@@ -987,8 +1088,11 @@ fn handle_event(app: &AppRc, ev: Event) {
             m.set_invites(ModelRc::new(VecModel::from(rows)));
         }
         Event::Folders(f) => {
-            let v: Vec<SharedString> = f.into_iter().map(Into::into).collect();
+            let v: Vec<SharedString> = f.iter().map(|s| s.as_str().into()).collect();
             m.set_folders(ModelRc::new(VecModel::from(v)));
+            app.borrow_mut().folders = f;
+            m.set_folder_edit("".into());
+            rebuild_contacts(app);
         }
         Event::History { id, lines, .. } => {
             app.borrow_mut().histories.insert(id.clone(), lines);
@@ -1009,7 +1113,10 @@ fn handle_event(app: &AppRc, ev: Event) {
             refresh_all_chats(app);
         }
         Event::Devices(list) => {
-            let dark = app.borrow().dark();
+            let (dark, off) = {
+                let a = app.borrow();
+                (a.dark(), a.offset)
+            };
             let rows: Vec<DeviceRow> = list
                 .iter()
                 .map(|d| DeviceRow {
@@ -1021,6 +1128,16 @@ fn handle_event(app: &AppRc, ev: Event) {
                     tint: tint(d.status, dark),
                     manager: d.manager,
                     this: d.this_device,
+                    info: [
+                        (!d.this_device && d.last_seen > 0).then(|| format!("last seen {}", fmt_date(d.last_seen, off))).unwrap_or_default(),
+                        d.remote.clone(),
+                    ]
+                    .iter()
+                    .filter(|s| !s.is_empty())
+                    .cloned()
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+                    .into(),
                 })
                 .collect();
             m.set_is_manager(list.iter().any(|d| d.this_device && d.manager));
@@ -1075,21 +1192,32 @@ fn handle_event(app: &AppRc, ev: Event) {
                 }
             }
         }
-        Event::ContactOnline { .. } => {
-            if !app.borrow().my_status.is_busy() {
+        Event::ContactOnline { name, .. } => {
+            if !busy(app) {
                 play(app, desktop::Sound::Online);
+                let (notify, online) = {
+                    let st = &app.borrow().settings;
+                    (st.notify, st.notify_online)
+                };
+                if notify && online {
+                    desktop::notify(&name, "is online");
+                }
             }
         }
         Event::AuthRequested { name } => {
-            play(app, desktop::Sound::Auth);
-            if app.borrow().settings.notify {
-                desktop::notify("Authorization request", &format!("{name} wants to add you"));
+            if !busy(app) {
+                play(app, desktop::Sound::Auth);
+                if app.borrow().settings.notify {
+                    desktop::notify("Authorization request", &format!("{name} wants to add you"));
+                }
             }
         }
         Event::FileOffered { from, name, size, .. } => {
-            play(app, desktop::Sound::File);
-            if app.borrow().settings.notify {
-                desktop::notify(&format!("File from {from}"), &format!("{name} ({})", human_size(size)));
+            if !busy(app) {
+                play(app, desktop::Sound::File);
+                if app.borrow().settings.notify {
+                    desktop::notify(&format!("File from {from}"), &format!("{name} ({})", human_size(size)));
+                }
             }
         }
         Event::Files(list) => {
@@ -1105,18 +1233,26 @@ fn handle_event(app: &AppRc, ev: Event) {
             let off = app.borrow().offset;
             let lines = |v: &[String]| v.iter().map(|a| format!("  {a}")).collect::<Vec<_>>().join("\n");
             let relays = n.relays.iter().map(|(r, ok)| format!("  {} {r}", if *ok { "up  " } else { "down" })).collect::<Vec<_>>().join("\n");
+            let plugin_net = {
+                let a = app.borrow();
+                if a.plugin_net.is_empty() { "  none".to_string() } else { a.plugin_net.iter().map(|(p, h, why)| format!("  {p} → {h} ({why})")).collect::<Vec<_>>().join("\n") }
+            };
             let info = format!(
-                "peer {}\nNAT: {}\nconnected peers: {}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {} · holding {} message(s)\nlast mailbox check: {}",
+                "peer {}\nNAT: {}\nconnected peers: {}\n{}\nrelay circuits:\n{}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {}{} · holding {} message(s)\nlast mailbox check: {}\nplugin network use:\n{}",
                 n.peer_id,
                 n.nat,
                 n.connected_peers,
+                lines(&n.peers),
+                if n.circuits.is_empty() { "  none".to_string() } else { lines(&n.circuits) },
                 lines(&n.listen),
                 lines(&n.external),
                 relays,
                 n.lan_only,
                 n.helper,
+                if n.bandwidth_kbps > 0 { format!(" (≤ {} kbit/s)", n.bandwidth_kbps) } else { String::new() },
                 n.held,
-                if n.mailbox_last_fetch == 0 { "never".to_string() } else { fmt_date(n.mailbox_last_fetch, off) }
+                if n.mailbox_last_fetch == 0 { "never".to_string() } else { fmt_date(n.mailbox_last_fetch, off) },
+                plugin_net
             );
             m.set_net_info(info.into());
         }
@@ -1126,7 +1262,14 @@ fn handle_event(app: &AppRc, ev: Event) {
             m.set_s_homepage(p.homepage.into());
             m.set_s_interests(p.interests.into());
         }
-        Event::Settings { auto_reply, read_receipts, relays, bootstrap, lan_only, helper, backup_dir, backup_hours, backup_keep } => {
+        Event::Settings { auto_reply, read_receipts, relays, bootstrap, lan_only, helper, backup_dir, backup_hours, backup_keep, nick, send_typing, bandwidth_kbps } => {
+            if !nick.is_empty() {
+                m.set_my_nick(nick.clone().into());
+                m.set_s_nick(nick.clone().into());
+                app.borrow_mut().my_nick = nick;
+            }
+            m.set_s_typing(send_typing);
+            m.set_s_bandwidth(bandwidth_kbps.to_string().into());
             m.set_s_auto_reply(auto_reply);
             m.set_s_read_receipts(read_receipts);
             m.set_s_relays(relays.join("\n").into());
@@ -1138,12 +1281,21 @@ fn handle_event(app: &AppRc, ev: Event) {
             m.set_s_backup_keep(backup_keep.to_string().into());
         }
         Event::PluginState { plugin, state } => {
-            if let Ok(v) = serde_json::from_str(&state) {
+            if plugin == LAYOUT {
+                apply_layout(app, &state);
+            } else if let Ok(v) = serde_json::from_str(&state) {
                 app.borrow().host.send(&plugin, &ToPlugin::State { state: v });
             }
         }
-        Event::Locked => lock(app, "Locked from another device. Unlock to continue."),
-        Event::Wiped => lock(app, "This device was wiped. Its account data is gone from this computer."),
+        Event::Locked => {
+            // "Lock" from another device means: the passphrase is needed again.
+            desktop::forget(&app.borrow().profile);
+            lock(app, "Locked from another device. Unlock to continue.");
+        }
+        Event::Wiped => {
+            desktop::forget(&app.borrow().profile);
+            lock(app, "This device was wiped. Its account data is gone from this computer.");
+        }
         Event::Stopped => {
             let mut a = app.borrow_mut();
             a.engine = None;
@@ -1162,7 +1314,23 @@ fn on_unlocked(app: &AppRc, ev: Event) {
         let mut a = app.borrow_mut();
         a.my_nick = nick.clone();
         a.my_status = status;
+        a.my_os = os.clone();
+        a.my_laptop = device_class == DeviceClass::Laptop;
+        let laptop = a.my_laptop;
+        if let Some(t) = a.tray.as_mut() {
+            t.set_identity(&os, laptop);
+        }
+        match a.remember_pass.take() {
+            Some(p) => {
+                if let Err(e) = desktop::remember(&a.profile, &p) {
+                    m.set_notice(format!("Could not store the passphrase in the keychain: {e}").into());
+                }
+            }
+            None if !m.get_remember() => desktop::forget(&a.profile),
+            None => {}
+        }
     }
+    m.set_s_nick(nick.clone().into());
     m.set_busy(false);
     m.set_login_error("".into());
     m.set_login_stage("".into());
@@ -1196,6 +1364,118 @@ fn parse_args() -> (String, u16) {
         }
     }
     (profile, port)
+}
+
+/// Hide the whole bar to the tray, or bring it back (tray menu, hotkey).
+fn set_hidden(app: &AppRc, hidden: bool) {
+    let m = {
+        let mut a = app.borrow_mut();
+        if a.hidden == hidden {
+            return;
+        }
+        // Without a tray icon there would be no way back.
+        if hidden && a.tray.is_none() {
+            return;
+        }
+        a.hidden = hidden;
+        a.main.upgrade()
+    };
+    let Some(m) = m else { return };
+    if hidden {
+        dock::undock(m.window());
+        let _ = m.hide();
+    } else {
+        let _ = m.show();
+        redock(app);
+    }
+}
+
+fn hotkeys_info(specs: &[String]) -> String {
+    let names = ["show/hide", "reply to last", "note to self", "away", "do not disturb"];
+    let on: Vec<String> = specs.iter().zip(names).filter(|(k, _)| !k.trim().is_empty()).map(|(k, n)| format!("{} {n}", k.trim())).collect();
+    if on.is_empty() { "hotkeys: none".into() } else { format!("hotkeys: {}", on.join(" · ")) }
+}
+
+fn register_hotkeys(app: &AppRc) -> Vec<String> {
+    if std::env::var_os("RIM_NO_HOTKEYS").is_some() {
+        return vec![];
+    }
+    let specs = app.borrow().settings.hotkeys.clone();
+    // Drop the old registrations before taking the keys again.
+    app.borrow_mut().hotkeys = desktop::Hotkeys::none();
+    let (hk, errors) = desktop::Hotkeys::new(&specs);
+    let mut a = app.borrow_mut();
+    a.hotkeys = hk;
+    if let Some(m) = a.main.upgrade() {
+        m.set_hotkeys_info(hotkeys_info(&specs).into());
+    }
+    errors
+}
+
+// ---------------------------------------------------------------- plugin layout sync (GD-1)
+
+/// Pseudo plugin id for the gadget layout synced between own devices.
+const LAYOUT: &str = "_layout";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Layout {
+    plugins: Vec<String>,
+    collapsed: Vec<String>,
+    updated: i64,
+}
+
+fn now_secs() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// The layout changed here: save and tell our other devices.
+fn layout_changed(app: &AppRc) {
+    let mut a = app.borrow_mut();
+    a.settings.layout_updated = now_secs();
+    save_settings(&a.dir, &a.settings);
+    let l = Layout { plugins: a.settings.plugins.clone(), collapsed: a.settings.collapsed_gadgets.clone(), updated: a.settings.layout_updated };
+    if let Ok(state) = serde_json::to_string(&l) {
+        a.send(Command::SyncPluginState { plugin: LAYOUT.into(), state });
+    }
+}
+
+/// Another device changed the layout: follow it if it is newer.
+fn apply_layout(app: &AppRc, state: &str) {
+    let Ok(l) = serde_json::from_str::<Layout>(state) else { return };
+    let (old, running) = {
+        let mut a = app.borrow_mut();
+        if l.updated <= a.settings.layout_updated {
+            return;
+        }
+        let old = std::mem::replace(&mut a.settings.plugins, l.plugins.clone());
+        a.settings.collapsed_gadgets = l.collapsed.clone();
+        a.settings.layout_updated = l.updated;
+        save_settings(&a.dir, &a.settings);
+        (old, a.engine.is_some())
+    };
+    for id in old.iter().filter(|p| !l.plugins.contains(p)) {
+        stop_plugin(app, id);
+    }
+    if running {
+        for id in l.plugins.iter().filter(|p| !old.contains(p)) {
+            if plugins::first_party().iter().any(|m| &m.id == id) {
+                start_plugin(app, id);
+            }
+        }
+    }
+    order_gadgets(app);
+    refresh_plugin_rows(app);
+}
+
+/// Put the plugin sections in the order of `settings.plugins`, with their folding.
+fn order_gadgets(app: &AppRc) {
+    let a = app.borrow();
+    let mut v: Vec<Gadget> = (0..a.gadgets.row_count()).filter_map(|i| a.gadgets.row_data(i)).collect();
+    v.sort_by_key(|g| a.settings.plugins.iter().position(|p| p.as_str() == g.id.as_str()).unwrap_or(usize::MAX));
+    for g in v.iter_mut() {
+        g.collapsed = a.settings.collapsed_gadgets.iter().any(|c| c.as_str() == g.id.as_str());
+    }
+    a.gadgets.set_vec(v);
 }
 
 fn profile_dir(profile: &str) -> PathBuf {
@@ -1239,6 +1519,7 @@ fn main() {
         let _ = slint::BackendSelector::new().backend_name(backend.into()).renderer_name("software".into()).select();
     }
     let (profile, port) = parse_args();
+    let autostarted = std::env::args().any(|a| a == "--autostart");
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let dir = profile_dir(&profile);
     let settings = load_settings(&dir);
@@ -1252,7 +1533,20 @@ fn main() {
     main.set_docked(true);
     main.set_profile(profile.clone().into());
     main.set_new_account(!Store::exists(&dir));
-    main.set_hotkeys_info(desktop::HOTKEYS_INFO.into());
+    main.set_hotkeys_info(hotkeys_info(&settings.hotkeys).into());
+    let hk: Vec<SharedString> = (0..5).map(|i| settings.hotkeys.get(i).cloned().unwrap_or_default().into()).collect();
+    main.set_s_hk_toggle(hk[0].clone());
+    main.set_s_hk_reply(hk[1].clone());
+    main.set_s_hk_notes(hk[2].clone());
+    main.set_s_hk_away(hk[3].clone());
+    main.set_s_hk_dnd(hk[4].clone());
+    main.set_s_start_min(settings.start_min);
+    main.set_s_notify_online(settings.notify_online);
+    main.set_s_snd_msg(settings.snd_msg);
+    main.set_s_snd_urgent(settings.snd_urgent);
+    main.set_s_snd_online(settings.snd_online);
+    main.set_s_snd_auth(settings.snd_auth);
+    main.set_s_snd_file(settings.snd_file);
     main.set_s_hide_offline(settings.hide_offline);
     main.set_s_sounds(settings.sounds);
     main.set_s_notify(settings.notify);
@@ -1296,14 +1590,23 @@ fn main() {
         blink: false,
         offset,
         audio: if std::env::var_os("RIM_NO_AUDIO").is_some() { desktop::Audio::none() } else { desktop::Audio::new() },
-        tray: if std::env::var_os("RIM_NO_TRAY").is_some() { None } else { desktop::Tray::new() },
-        hotkeys: if std::env::var_os("RIM_NO_HOTKEYS").is_some() { desktop::Hotkeys::none() } else { desktop::Hotkeys::new() },
+        tray: if std::env::var_os("RIM_NO_TRAY").is_some() { None } else { desktop::Tray::new(&rim_core::device::os_code(), rim_core::device::device_class() == DeviceClass::Laptop) },
+        hotkeys: desktop::Hotkeys::none(),
         host: plugins::Host::new(),
         gadgets: Rc::new(VecModel::default()),
         gadget_rows: HashMap::new(),
         plugin_prev_status: None,
         my_away: String::new(),
+        folders: vec![],
+        remember_pass: None,
+        hidden: false,
+        plugin_net: vec![],
+        my_os: String::new(),
+        my_laptop: false,
     }));
+    for e in register_hotkeys(&app) {
+        eprintln!("hotkey {e}");
+    }
     main.set_gadgets(ModelRc::from(app.borrow().gadgets.clone()));
     refresh_plugin_rows(&app);
 
@@ -1351,6 +1654,9 @@ fn main() {
             }
             let Some(m) = app.borrow().main.upgrade() else { return };
             let p = m.get_panel();
+            if ticks % 6 == 0 && p == 3 && m.get_settings_tab() == 5 {
+                refresh_plugin_rows(&app);
+            }
             if p != last_panel {
                 last_panel = p;
                 if p == 5 {
@@ -1381,10 +1687,25 @@ fn main() {
         });
     }
 
-    main.show().expect("show");
-    {
+    // "Start hidden" applies when the computer starts us (there is a tray to come back from).
+    let start_hidden = autostarted && app.borrow().settings.start_min && app.borrow().tray.is_some();
+    if start_hidden {
+        app.borrow_mut().hidden = true;
+    } else {
+        main.show().expect("show");
         let app = app.clone();
         slint::Timer::single_shot(Duration::from_millis(150), move || redock(&app));
+    }
+    install_file_drop(&app, main.window(), None);
+    // A passphrase remembered in the OS keychain unlocks right away (ID-3).
+    if Store::exists(&app.borrow().dir) {
+        let profile = app.borrow().profile.clone();
+        if let Some(pass) = desktop::remembered(&profile) {
+            main.set_remember(true);
+            main.set_busy(true);
+            let cfg = base_cfg(&app, &pass);
+            spawn_engine(&app, cfg);
+        }
     }
     // Debug builds only: log a test profile in without typing (UI smoke tests).
     #[cfg(debug_assertions)]
@@ -1421,6 +1742,7 @@ fn wire_login(app: &AppRc, main: &MainWindow) {
         }
         m.set_login_error("".into());
         m.set_busy(true);
+        ap.borrow_mut().remember_pass = m.get_remember().then(|| pass.to_string());
         let cfg = base_cfg(&ap, &pass);
         spawn_engine(&ap, cfg);
     });
@@ -1476,9 +1798,10 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
     });
     let ap = app.clone();
     main.on_new_invite(move |kind, label| {
+        let n = ap.borrow().main.upgrade().and_then(|m| m.get_invite_n().trim().parse::<u32>().ok()).unwrap_or(5).clamp(1, 1000);
         let (uses, ttl) = match kind {
             0 => (Some(1), None),
-            1 => (Some(5), None),
+            1 => (Some(n), None),
             2 => (None, Some(86_400)),
             3 => (None, Some(7 * 86_400)),
             _ => (None, None),
@@ -1494,7 +1817,7 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
     let ap = app.clone();
     main.on_deny(move |id| ap.borrow().send(Command::Deny { id: id.to_string() }));
     let ap = app.clone();
-    main.on_accept_intro(move |i| ap.borrow().send(Command::AcceptIntroduction { index: i as usize, text: "We were introduced — please add me.".into() }));
+    main.on_accept_intro(move |i, trust| ap.borrow().send(Command::AcceptIntroduction { index: i as usize, text: "We were introduced — please add me.".into(), trust }));
     let ap = app.clone();
     main.on_dismiss_intro(move |i| ap.borrow().send(Command::DismissIntroduction { index: i as usize }));
     let ap = app.clone();
@@ -1611,7 +1934,15 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
         if folder != c.folder {
             a.send(Command::SetFolder { id: id.clone(), folder });
         }
-        a.send(Command::SetUrgentAllowed { id: id.clone(), allowed: m.get_d_urgent() });
+        if m.get_d_urgent() != c.urgent_allowed {
+            a.send(Command::SetUrgentAllowed { id: id.clone(), allowed: m.get_d_urgent() });
+        }
+        if m.get_d_notify() != c.notify_online {
+            a.send(Command::SetNotifyOnline { id: id.clone(), on: m.get_d_notify() });
+        }
+        if m.get_d_auto() != c.auto_accept {
+            a.send(Command::SetAutoAccept { id: id.clone(), on: m.get_d_auto() });
+        }
         let ttl = match m.get_d_disappearing() {
             1 => Some(300),
             2 => Some(3600),
@@ -1619,7 +1950,9 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
             4 => Some(7 * 86_400),
             _ => None,
         };
-        a.send(Command::SetDisappearing { id, ttl });
+        if ttl != c.disappearing {
+            a.send(Command::SetDisappearing { id, ttl });
+        }
     });
     let ap = app.clone();
     main.on_group_rename(move || {
@@ -1645,6 +1978,57 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
     });
     let ap = app.clone();
     main.on_expand(move || set_collapsed(&ap, false));
+    let ap = app.clone();
+    main.on_list_clear(move |kind, id| {
+        let a = ap.borrow();
+        let id = id.to_string();
+        match kind.as_str() {
+            "ignored" => a.send(Command::SetIgnored { id, ignored: false }),
+            _ => a.send(Command::SetVisibility { id, visibility: Visibility::Normal }),
+        }
+    });
+    let ap = app.clone();
+    main.on_folder_move(move |f, dir| {
+        let a = ap.borrow();
+        let mut v = a.folders.clone();
+        let Some(i) = v.iter().position(|x| x.as_str() == f.as_str()) else { return };
+        let j = i as i32 + dir;
+        if j < 0 || j as usize >= v.len() {
+            return;
+        }
+        v.swap(i, j as usize);
+        a.send(Command::SetFolders(v));
+    });
+    let ap = app.clone();
+    main.on_folder_delete(move |f| {
+        let a = ap.borrow();
+        let v: Vec<String> = a.folders.iter().filter(|x| x.as_str() != f.as_str()).cloned().collect();
+        a.send(Command::SetFolders(v));
+    });
+    let ap = app.clone();
+    main.on_folder_rename(move |old, new| {
+        let a = ap.borrow();
+        let new = new.trim().to_string();
+        if new.is_empty() || a.folders.contains(&new) {
+            if let Some(m) = a.main.upgrade() {
+                m.set_folder_edit("".into());
+            }
+            return;
+        }
+        // Add the new name in place, move the contacts, then drop the old one.
+        let mut v = a.folders.clone();
+        if let Some(i) = v.iter().position(|x| x.as_str() == old.as_str()) {
+            v.insert(i + 1, new.clone());
+        } else {
+            v.push(new.clone());
+        }
+        a.send(Command::SetFolders(v.clone()));
+        for c in a.contacts.iter().filter(|c| c.folder == old.as_str()) {
+            a.send(Command::SetFolder { id: c.id.clone(), folder: new.clone() });
+        }
+        v.retain(|x| x.as_str() != old.as_str());
+        a.send(Command::SetFolders(v));
+    });
 }
 
 fn wire_settings(app: &AppRc, main: &MainWindow) {
@@ -1680,7 +2064,17 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
                 "read-receipts" => a.send(Command::SetReadReceipts(m.get_s_read_receipts())),
                 "hide-offline" => a.settings.hide_offline = m.get_s_hide_offline(),
                 "sounds" => a.settings.sounds = m.get_s_sounds(),
+                "snd" => {
+                    a.settings.snd_msg = m.get_s_snd_msg();
+                    a.settings.snd_urgent = m.get_s_snd_urgent();
+                    a.settings.snd_online = m.get_s_snd_online();
+                    a.settings.snd_auth = m.get_s_snd_auth();
+                    a.settings.snd_file = m.get_s_snd_file();
+                }
                 "notify" => a.settings.notify = m.get_s_notify(),
+                "notify-online" => a.settings.notify_online = m.get_s_notify_online(),
+                "typing" => a.send(Command::SetSendTyping(m.get_s_typing())),
+                "start-min" => a.settings.start_min = m.get_s_start_min(),
                 "popups" => a.settings.popups = m.get_s_popups(),
                 "autostart" => {
                     a.settings.autostart = m.get_s_autostart();
@@ -1725,6 +2119,8 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
         let lines = |s: SharedString| s.lines().map(|l| l.trim().to_string()).filter(|l| !l.is_empty()).collect::<Vec<_>>();
         ap.borrow().send(Command::SetRelays(lines(m.get_s_relays())));
         ap.borrow().send(Command::SetBootstrap(lines(m.get_s_bootstrap())));
+        let kbps: u32 = m.get_s_bandwidth().trim().parse().unwrap_or(0);
+        ap.borrow().send(Command::SetBandwidth(kbps));
         notice(&ap, "Network settings saved.");
     });
     let ap = app.clone();
@@ -1740,6 +2136,10 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
     let ap = app.clone();
     main.on_save_profile(move || {
         let Some(m) = ap.borrow().main.upgrade() else { return };
+        let nick = m.get_s_nick().trim().to_string();
+        if !nick.is_empty() && nick != ap.borrow().my_nick {
+            ap.borrow().send(Command::SetNick(nick));
+        }
         ap.borrow().send(Command::SetProfile(Profile {
             about: m.get_s_about().to_string(),
             location: m.get_s_location().to_string(),
@@ -1785,9 +2185,11 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
         }
     });
     let ap = app.clone();
-    main.on_link_device(move |manager, history| {
+    main.on_link_device(move |manager, history, days| {
         let Some(m) = ap.borrow().main.upgrade() else { return };
-        ap.borrow().send(Command::LinkDevice { code: m.get_link_input().to_string(), manager, history_days: if history { Some(0) } else { None } });
+        // history_days: Some(0) = everything, Some(n) = last n days, None = none.
+        let days = days.trim().parse::<u32>().ok().filter(|d| *d > 0).unwrap_or(0);
+        ap.borrow().send(Command::LinkDevice { code: m.get_link_input().to_string(), manager, history_days: if history { Some(days) } else { None } });
         m.set_link_input("".into());
         m.set_link_check_words("".into());
     });
@@ -1796,7 +2198,25 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
     let ap = app.clone();
     main.on_device_lock(move |peer| ap.borrow().send(Command::RemoteLock { peer: peer.to_string() }));
     let ap = app.clone();
-    main.on_wipe_account(move || ap.borrow().send(Command::WipeAccount));
+    main.on_wipe_account(move || {
+        desktop::forget(&ap.borrow().profile);
+        ap.borrow().send(Command::WipeAccount);
+    });
+    let ap = app.clone();
+    main.on_save_hotkeys(move || {
+        let Some(m) = ap.borrow().main.upgrade() else { return };
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.hotkeys = [m.get_s_hk_toggle(), m.get_s_hk_reply(), m.get_s_hk_notes(), m.get_s_hk_away(), m.get_s_hk_dnd()].iter().map(|s| s.trim().to_string()).collect();
+            save_settings(&a.dir, &a.settings);
+        }
+        let errors = register_hotkeys(&ap);
+        if errors.is_empty() {
+            notice(&ap, "Hotkeys saved.");
+        } else {
+            notice(&ap, &format!("Not usable: {}", errors.join("; ")));
+        }
+    });
     let ap = app.clone();
     main.on_split_changed(move |v| {
         let mut a = ap.borrow_mut();
@@ -1873,8 +2293,8 @@ fn poll_desktop(app: &AppRc) {
             }
         };
         if show {
-            let c = !app.borrow().collapsed;
-            set_collapsed(app, c);
+            let h = !app.borrow().hidden;
+            set_hidden(app, h);
         } else if quit {
             shutdown(app);
         } else if let Some(s) = status {
@@ -1886,12 +2306,13 @@ fn poll_desktop(app: &AppRc) {
     for k in keys {
         match k {
             desktop::Hotkey::ToggleBar => {
-                let c = !app.borrow().collapsed;
-                set_collapsed(app, c);
+                let h = !app.borrow().hidden;
+                set_hidden(app, h);
             }
             desktop::Hotkey::ReplyLast => {
                 let last = app.borrow().last_incoming.clone();
                 if let Some(k) = last {
+                    set_hidden(app, false);
                     set_collapsed(app, false);
                     open_chat(app, &k);
                 }
@@ -1933,6 +2354,12 @@ fn idle_tick(app: &AppRc) {
     if manual_busy && prev.is_none() {
         return;
     }
+    // Locking the screen means "away" right now (PR-3).
+    if desktop::screen_locked() == Some(true) && matches!(status, Status::Online | Status::FreeForChat) {
+        app.borrow_mut().auto_prev = Some(status);
+        app.borrow().send(Command::SetStatus(Status::Away));
+        return;
+    }
     if na > 0 && idle >= na && status != Status::NotAvailable {
         if prev.is_none() {
             app.borrow_mut().auto_prev = Some(status);
@@ -1960,7 +2387,7 @@ fn autohide_tick(app: &AppRc) {
         return;
     }
     let Some(m) = app.borrow().main.upgrade() else { return };
-    let Some((cx, cy)) = dock::cursor() else { return };
+    let Some((cx, cy)) = dock::cursor(m.window().scale_factor()) else { return };
     let (pos, size) = (m.window().position(), m.window().size());
     let inside = cx >= pos.x && cx < pos.x + size.width as i32 && cy >= pos.y && cy < pos.y + size.height as i32;
     if inside || m.get_panel() != 0 || !m.get_logged_in() {
@@ -2000,7 +2427,10 @@ fn tray_tick(app: &AppRc) {
 fn refresh_plugin_rows(app: &AppRc) {
     let a = app.borrow();
     let Some(m) = a.main.upgrade() else { return };
-    let rows: Vec<PluginRow> = plugins::first_party()
+    let mut all = plugins::first_party();
+    all.sort_by_key(|p| a.settings.plugins.iter().position(|x| *x == p.id).unwrap_or(usize::MAX));
+    let enabled: Vec<&String> = a.settings.plugins.iter().collect();
+    let rows: Vec<PluginRow> = all
         .iter()
         .map(|p| PluginRow {
             id: p.id.clone().into(),
@@ -2009,6 +2439,14 @@ fn refresh_plugin_rows(app: &AppRc) {
             caps: p.capabilities.join(", ").into(),
             enabled: a.settings.plugins.contains(&p.id),
             installed: plugins::exe_for(p).is_some(),
+            usage: match a.host.memory(&p.id) {
+                Some(b) => format!("running · {} memory", human_size(b)),
+                None if a.host.is_running(&p.id) => "running".into(),
+                None => String::new(),
+            }
+            .into(),
+            first: enabled.first().map(|x| **x == p.id).unwrap_or(false),
+            last: enabled.last().map(|x| **x == p.id).unwrap_or(false),
         })
         .collect();
     m.set_plugins(ModelRc::new(VecModel::from(rows)));
@@ -2036,6 +2474,7 @@ fn start_plugin(app: &AppRc, id: &str) {
 fn stop_plugin(app: &AppRc, id: &str) {
     let mut a = app.borrow_mut();
     a.host.stop(id);
+    a.plugin_net.retain(|(p, _, _)| p != id);
     a.gadget_rows.remove(id);
     let idx = (0..a.gadgets.row_count()).find(|i| a.gadgets.row_data(*i).map(|g| g.id == id).unwrap_or(false));
     if let Some(i) = idx {
@@ -2134,6 +2573,11 @@ fn poll_plugins(app: &AppRc) {
                 },
             ),
             ToHost::State { state } => app.borrow().send(Command::SyncPluginState { plugin: id.clone(), state: state.to_string() }),
+            ToHost::Network { host, purpose } => {
+                let mut a = app.borrow_mut();
+                a.plugin_net.retain(|(p, _, why)| !(p == &id && why == &purpose));
+                a.plugin_net.push((id.clone(), host, purpose));
+            }
         }
     }
     // A plugin that exited on its own loses its section.
@@ -2171,25 +2615,88 @@ fn wire_plugins(app: &AppRc, main: &MainWindow) {
             row.collapsed = now_collapsed;
             a.gadgets.set_row_data(i, row);
         }
+        drop(a);
+        layout_changed(&ap);
     });
     let ap = app.clone();
     main.on_plugin_toggle(move |id, on| {
         let id = id.to_string();
+        if on {
+            // Show what it may do before it runs (GD-1a).
+            let Some(man) = plugins::first_party().into_iter().find(|p| p.id == id) else { return };
+            if let Some(m) = ap.borrow().main.upgrade() {
+                m.set_plugin_confirm(id.clone().into());
+                m.set_plugin_confirm_text(format!("Enable {}? It runs as its own program and may: {}.", man.name, man.capabilities.join(", ")).into());
+            }
+            refresh_plugin_rows(&ap);
+            return;
+        }
         {
             let mut a = ap.borrow_mut();
             a.settings.plugins.retain(|x| *x != id);
-            if on {
-                a.settings.plugins.push(id.clone());
-            }
-            save_settings(&a.dir, &a.settings);
         }
-        if on {
-            if ap.borrow().engine.is_some() {
-                start_plugin(&ap, &id);
+        stop_plugin(&ap, &id);
+        layout_changed(&ap);
+        refresh_plugin_rows(&ap);
+    });
+    let ap = app.clone();
+    main.on_plugin_enable(move |id| {
+        let id = id.to_string();
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.plugins.retain(|x| *x != id);
+            a.settings.plugins.push(id.clone());
+            if let Some(m) = a.main.upgrade() {
+                m.set_plugin_confirm("".into());
             }
-        } else {
-            stop_plugin(&ap, &id);
+        }
+        if ap.borrow().engine.is_some() {
+            start_plugin(&ap, &id);
+        }
+        layout_changed(&ap);
+        refresh_plugin_rows(&ap);
+    });
+    let ap = app.clone();
+    main.on_plugin_cancel(move || {
+        if let Some(m) = ap.borrow().main.upgrade() {
+            m.set_plugin_confirm("".into());
         }
         refresh_plugin_rows(&ap);
+    });
+    let ap = app.clone();
+    main.on_plugin_move(move |id, dir| {
+        {
+            let mut a = ap.borrow_mut();
+            let v = &mut a.settings.plugins;
+            let Some(i) = v.iter().position(|x| x.as_str() == id.as_str()) else { return };
+            let j = i as i32 + dir;
+            if j < 0 || j as usize >= v.len() {
+                return;
+            }
+            v.swap(i, j as usize);
+        }
+        order_gadgets(&ap);
+        layout_changed(&ap);
+        refresh_plugin_rows(&ap);
+    });
+}
+
+// ================================================================ drag & drop (FT-4)
+
+/// Files dropped on a chat window (or on the bar while a chat is docked)
+/// are offered to that chat.
+fn install_file_drop(app: &AppRc, w: &slint::Window, key: Option<String>) {
+    use slint::winit_030::{winit::event::WindowEvent, EventResult, WinitWindowAccessor};
+    let ap = app.clone();
+    w.on_winit_window_event(move |_, ev| {
+        if let WindowEvent::DroppedFile(path) = ev {
+            let target = key.clone().or_else(|| ap.borrow().docked_chat.clone());
+            match target {
+                Some(k) => send_path(&ap, &k, path),
+                None => notice(&ap, "Drop files on a chat to send them."),
+            }
+            return EventResult::PreventDefault;
+        }
+        EventResult::Propagate
     });
 }

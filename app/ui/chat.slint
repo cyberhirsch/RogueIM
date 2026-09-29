@@ -160,7 +160,7 @@ export component ChatPane inherits Rectangle {
                                 Rectangle { }
                                 if l.state != "": Text {
                                     text: l.state;
-                                    color: l.state == "failed" ? Theme.red : (l.state == "read" ? Theme.accent : Theme.faint);
+                                    color: l.state == "failed" ? Theme.red : (l.state == "read" || l.state == "delivered" ? Theme.accent : Theme.faint);
                                     font-size: 10px;
                                     vertical-alignment: center;
                                 }

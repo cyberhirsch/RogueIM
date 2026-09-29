@@ -39,6 +39,8 @@ pub struct NetOpts {
     pub mdns: bool,
     pub upnp: bool,
     pub relay_server: bool,
+    /// Helper bandwidth cap per relayed circuit (0 = libp2p defaults).
+    pub bandwidth_kbps: u32,
 }
 
 pub fn build_swarm(device: Keypair, opts: NetOpts) -> Result<Swarm<Behaviour>> {
@@ -74,7 +76,7 @@ pub fn build_swarm(device: Keypair, opts: NetOpts) -> Result<Swarm<Behaviour>> {
                 kad,
                 autonat: autonat::Behaviour::new(peer, autonat::Config::default()),
                 relay_client,
-                relay_server: if opts.relay_server { Some(relay::Behaviour::new(peer, relay::Config::default())) } else { None }.into(),
+                relay_server: if opts.relay_server { Some(relay::Behaviour::new(peer, relay_config(opts.bandwidth_kbps))) } else { None }.into(),
                 dcutr: dcutr::Behaviour::new(peer),
                 upnp: if opts.upnp { Some(upnp::tokio::Behaviour::default()) } else { None }.into(),
             })
@@ -187,6 +189,21 @@ impl Engine {
             helper: self.p.net.helper || self.node,
             held: self.p.held.len(),
             mailbox_last_fetch: self.last_mail_fetch,
+            peers: self
+                .swarm
+                .connected_peers()
+                .map(|p| {
+                    let s = p.to_string();
+                    let who = match self.owner_of_peer(&s).as_deref() {
+                        Some("self") => "own device".to_string(),
+                        Some(id) => self.contact(id).map(|c| c.petname.clone()).unwrap_or_else(|| "group member".into()),
+                        None => "network".into(),
+                    };
+                    format!("{who}  {}", &s[s.len().saturating_sub(8)..])
+                })
+                .collect(),
+            circuits: self.external.iter().filter(|a| is_relayed(a)).map(|a| a.to_string()).collect(),
+            bandwidth_kbps: self.p.net.bandwidth_kbps,
         };
         self.emit(Event::Net(v));
     }
@@ -327,4 +344,16 @@ impl Engine {
         }
         None
     }
+}
+
+/// Relay limits for helper mode. A circuit lasts at most two minutes (the
+/// libp2p default), so the byte budget follows from the bandwidth cap.
+fn relay_config(kbps: u32) -> relay::Config {
+    let mut c = relay::Config::default();
+    if kbps > 0 {
+        let secs = c.max_circuit_duration.as_secs().max(1);
+        c.max_circuit_bytes = u64::from(kbps) * 1024 / 8 * secs;
+        c.max_circuits = ((kbps / 64).max(2) as usize).min(c.max_circuits);
+    }
+    c
 }

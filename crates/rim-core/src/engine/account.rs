@@ -89,6 +89,9 @@ fn base_persist(kp: &Keypair, olm: &Account, seeds: DeviceSeeds, name: String) -
         linking: None,
         seen_mail: vec![],
         lock_requested: false,
+        send_typing: true,
+        remote_status: HashMap::new(),
+        own_last_seen: HashMap::new(),
     }
 }
 
@@ -173,7 +176,7 @@ pub(super) async fn open(cfg: EngineConfig, ev: std::sync::mpsc::Sender<Event>, 
     let peer_id = device_key.public().to_peer_id();
     let mut swarm = net::build_swarm(
         device_key.clone(),
-        net::NetOpts { mdns: !cfg.no_mdns && !cfg.loopback, upnp: p.net.upnp && !p.net.lan_only && !cfg.loopback, relay_server: cfg.node || p.net.helper },
+        net::NetOpts { mdns: !cfg.no_mdns && !cfg.loopback, upnp: p.net.upnp && !p.net.lan_only && !cfg.loopback, relay_server: cfg.node || p.net.helper, bandwidth_kbps: p.net.bandwidth_kbps },
     )?;
     let port = cfg.port;
     let host = if cfg.loopback { "127.0.0.1" } else { "0.0.0.0" };
@@ -431,6 +434,9 @@ impl Engine {
                 authorized: c.authorized,
                 updated: c.updated,
                 addrs: c.addrs(),
+                notify_online: Some(c.notify_online),
+                auto_accept: Some(c.auto_accept),
+                urgent_allowed: Some(c.urgent_allowed),
             })
             .collect();
         let grant = LinkGrant {
@@ -446,6 +452,8 @@ impl Engine {
                 profile: Some(self.p.profile.clone()),
                 folders: Some(self.p.folders.clone()),
                 updated: self.p.settings_updated,
+                nick: Some(self.p.nick.clone()),
+                send_typing: Some(self.p.send_typing),
             },
             groups: self.p.groups.iter().filter(|g| !g.left).map(|g| g.state.clone()).collect(),
         };
@@ -585,7 +593,9 @@ impl Engine {
         };
         let t = Target { owner: "self".into(), entry, seeds: self.p.own_seeds.get(peer).cloned(), addrs: self.p.own_addrs.get(peer).cloned().unwrap_or_default() };
         self.send_to_target(&t, &Body::Remote(cmd), Some(0), None)?;
+        self.p.remote_status.insert(peer.to_string(), "lock pending".into());
         self.save();
+        self.emit_devices();
         self.notice("Lock sent. The device locks when it receives it.");
         Ok(())
     }
@@ -594,6 +604,12 @@ impl Engine {
         if cmd.target != self.peer_id.to_string() {
             return Ok(());
         }
+        // Confirm first: after a wipe there is nobody left to answer.
+        let ack = Body::RemoteAck { action: cmd.action, ts: now() };
+        if cmd.action == RemoteAction::Wipe {
+            identity::verify_remote(&self.p.account_pk, &cmd)?;
+        }
+        let _ = self.send_body("self", ack, Some(0));
         match cmd.action {
             RemoteAction::Lock => {
                 self.p.lock_requested = true;

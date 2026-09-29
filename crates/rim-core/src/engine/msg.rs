@@ -725,11 +725,12 @@ impl Engine {
             } else {
                 self.presence.remove(device);
             }
-            if online && !was_online {
+            if online && !was_online && self.contact(owner).map(|c| c.notify_online).unwrap_or(false) {
                 let name = self.contact(owner).map(|c| c.petname.clone()).unwrap_or_default();
                 self.emit(Event::ContactOnline { id: owner.to_string(), name });
             }
         } else {
+            self.p.own_last_seen.insert(device.to_string(), now());
             let e = self.p.own_addrs.entry(device.to_string()).or_default();
             for a in &addrs {
                 if !e.contains(a) {
@@ -913,6 +914,9 @@ impl Engine {
     }
 
     pub fn send_typing(&mut self, id: &str, typing: bool) {
+        if !self.p.send_typing {
+            return;
+        }
         // Not to backgrounded mobile devices (PRD PR-9).
         let skip: Vec<String> = self
             .presence
@@ -1149,7 +1153,7 @@ impl Engine {
         Ok(())
     }
 
-    pub fn accept_introduction(&mut self, index: usize, text: &str) -> Result<()> {
+    pub fn accept_introduction(&mut self, index: usize, text: &str, trust: bool) -> Result<()> {
         if index >= self.p.intros.len() {
             bail!("no such introduction");
         }
@@ -1165,7 +1169,8 @@ impl Engine {
         let mut c = ContactRec::new(id.clone(), &intro.card, intro.seeds.clone());
         c.awaiting = true;
         c.introduced_by = format!("{}{}", rec.from, if intro.verified { " (verified)" } else { "" });
-        c.verified = false;
+        // A vouch counts as verification only if the user says so (CT-9).
+        c.verified = trust && intro.verified;
         c.set_addrs(&intro.addrs);
         for (peer, a) in &intro.addrs {
             self.register_addrs(peer, a);
@@ -1232,6 +1237,17 @@ impl Engine {
                 }
             }
             Body::Remote(cmd) => self.on_remote(cmd)?,
+            Body::RemoteAck { action, .. } => {
+                let (status, what) = match action {
+                    RemoteAction::Lock => ("locked", "locked"),
+                    RemoteAction::Wipe => ("wiped", "wiped its data"),
+                };
+                self.p.remote_status.insert(device.to_string(), status.into());
+                let name = self.p.devices.as_ref().and_then(|l| l.list.devices.iter().find(|d| d.peer_id == device).map(|d| d.name.clone())).unwrap_or_else(|| "A removed device".into());
+                self.save();
+                self.emit_devices();
+                self.notice(format!("{name} {what}."));
+            }
             Body::PluginState { plugin, state, .. } => self.emit(Event::PluginState { plugin, state }),
             Body::Receipt { ids } => {
                 for id in ids {
@@ -1272,6 +1288,9 @@ impl Engine {
             authorized: c.authorized,
             updated: c.updated,
             addrs: c.addrs(),
+            notify_online: Some(c.notify_online),
+            auto_accept: Some(c.auto_accept),
+            urgent_allowed: Some(c.urgent_allowed),
         };
         let _ = self.send_body("self", Body::SyncContacts(vec![cs]), Some(0));
     }
@@ -1293,6 +1312,15 @@ impl Engine {
                 c.authorized = cs.authorized;
                 c.awaiting = !cs.authorized && !cs.removed;
                 c.updated = cs.updated;
+                if let Some(v) = cs.notify_online {
+                    c.notify_online = v;
+                }
+                if let Some(v) = cs.auto_accept {
+                    c.auto_accept = v;
+                }
+                if let Some(v) = cs.urgent_allowed {
+                    c.urgent_allowed = v;
+                }
                 if identity::verify_card(&cs.card).is_ok() && cs.card.devices.list.version > c.list_version {
                     c.apply_devices(&cs.card.devices);
                 }
@@ -1317,6 +1345,15 @@ impl Engine {
                 c.authorized = cs.authorized;
                 c.awaiting = !cs.authorized && !cs.removed;
                 c.updated = cs.updated;
+                if let Some(v) = cs.notify_online {
+                    c.notify_online = v;
+                }
+                if let Some(v) = cs.auto_accept {
+                    c.auto_accept = v;
+                }
+                if let Some(v) = cs.urgent_allowed {
+                    c.urgent_allowed = v;
+                }
                 c.set_addrs(&cs.addrs);
                 newly_authorized = cs.authorized;
                 self.p.contacts.push(c);
@@ -1342,6 +1379,8 @@ impl Engine {
             profile: Some(self.p.profile.clone()),
             folders: Some(self.p.folders.clone()),
             updated: self.p.settings_updated,
+            nick: Some(self.p.nick.clone()),
+            send_typing: Some(self.p.send_typing),
         };
         let _ = self.send_body("self", Body::SyncSettings(s), Some(0));
     }
@@ -1362,6 +1401,12 @@ impl Engine {
         if let Some(v) = s.folders {
             self.p.folders = v;
             self.emit(Event::Folders(self.p.folders.clone()));
+        }
+        if let Some(v) = s.nick.filter(|n| !n.trim().is_empty()) {
+            self.p.nick = v;
+        }
+        if let Some(v) = s.send_typing {
+            self.p.send_typing = v;
         }
         self.p.settings_updated = s.updated;
         self.save();
