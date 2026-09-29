@@ -78,6 +78,10 @@ pub struct NetSettings {
     pub helper: bool,
     pub upnp: bool,
     pub bandwidth_kbps: u32,
+    /// Ask public libp2p nodes for our outside address and relay help, so two
+    /// peers behind routers can connect directly (hole punching).
+    #[serde(default = "yes")]
+    pub public_helpers: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]

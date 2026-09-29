@@ -10,7 +10,8 @@ use super::*;
 use crate::identity::now;
 use crate::mailbox::{parse_seed, MailItem};
 
-const MAIL_EVERY: i64 = 30;
+/// Full mailbox check (the live subscription delivers new mail at once).
+const MAIL_EVERY: i64 = 120;
 const RDV_EVERY: i64 = 600;
 const DHT_SLOTS: u32 = 8;
 
@@ -24,7 +25,7 @@ fn dht_key(seed: &[u8; 32], day: i64, slot: u32) -> RecordKey {
 }
 
 impl Engine {
-    fn all_inbox_seeds(&self) -> Vec<[u8; 32]> {
+    pub fn all_inbox_seeds(&self) -> Vec<[u8; 32]> {
         self.p.own_seeds.get(&self.peer_id.to_string()).and_then(|s| parse_seed(&s.inbox).ok()).into_iter().collect()
     }
 
@@ -38,6 +39,19 @@ impl Engine {
             self.dht_poll(now);
             return;
         };
+        let today = now.div_euclid(86_400);
+        if self.live_day != today {
+            self.live_day = today;
+            let seeds = self.all_inbox_seeds();
+            let tx = self.internal_tx.clone();
+            let m = mb.clone();
+            tokio::spawn(async move {
+                m.listen(&seeds, move |l| {
+                    let _ = tx.send(Internal::Live(l));
+                })
+                .await;
+            });
+        }
         if !self.mail_fetching && now - self.last_mail_fetch >= MAIL_EVERY {
             self.mail_fetching = true;
             self.last_mail_fetch = now;
@@ -121,6 +135,10 @@ impl Engine {
 
     pub fn on_mail(&mut self, items: Vec<MailItem>) {
         self.mail_fetching = false;
+        self.take_mail(items);
+    }
+
+    pub fn take_mail(&mut self, items: Vec<MailItem>) {
         let mut changed = false;
         for item in items {
             let key = item.event_id.to_hex();

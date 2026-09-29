@@ -26,6 +26,21 @@ impl Peer {
         Self::start_with(name, pass, tmp(name), StartMode::Auto, false)
     }
 
+    /// Internet (Nostr) but no direct connection to contacts, as behind two routers.
+    pub fn start_isolated(name: &str, pass: &str) -> Peer {
+        let dir = tmp(name);
+        let (h, rx) = spawn(EngineConfig {
+            dir: dir.clone(),
+            passphrase: pass.into(),
+            nick: Some(name.into()),
+            device_name: Some(format!("{name}-dev")),
+            loopback: true,
+            no_direct: true,
+            ..Default::default()
+        });
+        Peer { h, rx, dir, name: name.into() }
+    }
+
     pub fn start_with(name: &str, pass: &str, dir: PathBuf, mode: StartMode, internet: bool) -> Peer {
         let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_test_writer().try_init();
         let (h, rx) = spawn(EngineConfig {

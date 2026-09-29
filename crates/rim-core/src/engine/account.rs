@@ -82,7 +82,7 @@ fn base_persist(kp: &Keypair, olm: &Account, seeds: DeviceSeeds, name: String) -
         files: vec![],
         held: vec![],
         outbox: vec![],
-        net: NetSettings { relays: mailbox::DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect(), upnp: true, ..Default::default() },
+        net: NetSettings { relays: mailbox::DEFAULT_RELAYS.iter().map(|s| s.to_string()).collect(), upnp: true, public_helpers: true, ..Default::default() },
         backup: BackupSettings { keep: 5, ..Default::default() },
         recovery: None,
         settings_updated: now(),
@@ -215,6 +215,12 @@ pub(super) async fn open(cfg: EngineConfig, ev: std::sync::mpsc::Sender<Event>, 
         open_chats: Default::default(),
         open_groups: Default::default(),
         mailbox: None,
+        loopback: cfg.loopback,
+        no_direct: cfg.no_direct,
+        observed: vec![],
+        live_day: 0,
+        last_signal_presence: 0,
+        punched: HashMap::new(),
         internal_tx: itx,
         relay_status: vec![],
         nat: "unknown".into(),
@@ -302,6 +308,7 @@ impl Engine {
         self.mailbox = Some(mb);
         self.last_mail_fetch = 0;
         self.last_rdv_publish = 0;
+        self.live_day = 0;
     }
 
     // ================================================================ linking (new device side)

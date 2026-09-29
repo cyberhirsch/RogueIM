@@ -8,6 +8,7 @@ mod groups;
 mod mail;
 mod msg;
 mod net;
+mod signal;
 mod state;
 mod views;
 
@@ -82,6 +83,10 @@ pub struct EngineConfig {
     pub no_mdns: bool,
     /// Listen on 127.0.0.1 only (tests: no firewall prompts, no LAN exposure).
     pub loopback: bool,
+    /// Tests only: drop every direct connection to contacts, as if two
+    /// routers stood in between, so only the Nostr paths remain.
+    #[doc(hidden)]
+    pub no_direct: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -123,6 +128,8 @@ pub enum Command {
     SetNick(String),
     SetSendTyping(bool),
     SetBandwidth(u32),
+    /// Use public libp2p nodes for our outside address and relay help.
+    SetPublicHelpers(bool),
     // messaging
     SendText { id: String, body: String, reply_to: Option<u64>, urgent: bool },
     EditText { id: String, msg: u64, body: String },
@@ -205,7 +212,7 @@ pub enum Event {
     Net(NetView),
     Profile(Profile),
     PluginState { plugin: String, state: String },
-    Settings { auto_reply: bool, read_receipts: bool, relays: Vec<String>, bootstrap: Vec<String>, lan_only: bool, helper: bool, backup_dir: String, backup_hours: u32, backup_keep: u32, nick: String, send_typing: bool, bandwidth_kbps: u32 },
+    Settings { auto_reply: bool, read_receipts: bool, relays: Vec<String>, bootstrap: Vec<String>, lan_only: bool, helper: bool, backup_dir: String, backup_hours: u32, backup_keep: u32, nick: String, send_typing: bool, bandwidth_kbps: u32, public_helpers: bool },
     /// Another of our devices asked this one to lock.
     Locked,
     /// This device was wiped (remotely or by the user); the profile is gone.
@@ -257,6 +264,9 @@ pub(crate) struct PresenceRec {
     pub owner: String,
     pub pres: Presence,
     pub at: Instant,
+    /// How long this record counts without a refresh (longer when it came
+    /// over Nostr, which is refreshed less often).
+    pub ttl: Duration,
 }
 
 /// Messages from background tasks (Nostr, file IO) back into the loop.
@@ -265,6 +275,9 @@ pub(crate) enum Internal {
     MailPosted { contact: String, device: String, msg_id: u64, ok: bool },
     Rdv { peer: String, addrs: Vec<String> },
     RelayStatus(Vec<(String, bool)>),
+    Live(crate::mailbox::Live),
+    /// Try the hole punch to this device again.
+    Punch { peer: String, addrs: Vec<String>, round: u8 },
 }
 
 pub(crate) struct Engine {
@@ -297,6 +310,16 @@ pub(crate) struct Engine {
     pub open_chats: HashSet<String>,
     pub open_groups: HashSet<String>,
     pub mailbox: Option<Mailbox>,
+    /// Loopback-only (tests): no public helper nodes.
+    pub loopback: bool,
+    pub no_direct: bool,
+    /// Our public address as the internet sees it (from public peers' identify).
+    pub observed: Vec<Multiaddr>,
+    /// Day of the current live Nostr subscription.
+    pub live_day: i64,
+    pub last_signal_presence: i64,
+    /// When we last asked a device to hole-punch.
+    pub punched: HashMap<String, i64>,
     pub internal_tx: mpsc::UnboundedSender<Internal>,
     pub relay_status: Vec<(String, bool)>,
     pub nat: String,
@@ -353,7 +376,7 @@ impl Engine {
     }
 
     pub fn my_addrs(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.external.iter().chain(self.listen.iter()).map(|a| a.to_string()).collect();
+        let mut v: Vec<String> = self.external.iter().chain(self.observed.iter()).chain(self.listen.iter()).map(|a| a.to_string()).collect();
         v.dedup();
         v
     }
@@ -459,6 +482,9 @@ impl Engine {
             Internal::MailPosted { contact, device, msg_id, ok } => self.on_mail_posted(&contact, &device, msg_id, ok),
             Internal::Rdv { peer, addrs } => self.on_rdv(&peer, addrs),
             Internal::RelayStatus(s) => self.relay_status = s,
+            Internal::Live(crate::mailbox::Live::Mail(item)) => self.take_mail(vec![item]),
+            Internal::Live(crate::mailbox::Live::Signal(bytes)) => self.on_signal(bytes),
+            Internal::Punch { peer, addrs, round } => self.punch(&peer, &addrs, round),
         }
     }
 
@@ -470,7 +496,8 @@ impl Engine {
         self.expire_typing();
         self.backup_heartbeat(now);
         let before = self.presence.len();
-        self.presence.retain(|_, r| r.at.elapsed() < PRESENCE_TTL);
+        self.presence.retain(|_, r| r.at.elapsed() < r.ttl);
+        self.signal_heartbeat(now);
         if self.presence.len() != before {
             self.emit_contacts();
             self.emit_devices();
@@ -575,6 +602,21 @@ impl Engine {
             Command::SetSendTyping(b) => {
                 self.p.send_typing = b;
                 self.settings_changed();
+            }
+            Command::SetPublicHelpers(b) => {
+                self.p.net.public_helpers = b;
+                self.save();
+                if b {
+                    self.dial_bootstrap();
+                } else {
+                    self.observed.clear();
+                    for a in net::PUBLIC_HELPERS {
+                        if let Some(pid) = a.parse::<libp2p::Multiaddr>().ok().and_then(|m| m.iter().find_map(|p| if let libp2p::multiaddr::Protocol::P2p(id) = p { Some(id) } else { None })) {
+                            let _ = self.swarm.disconnect_peer_id(pid);
+                        }
+                    }
+                }
+                self.emit_settings();
             }
             Command::SetBandwidth(k) => {
                 self.p.net.bandwidth_kbps = k;

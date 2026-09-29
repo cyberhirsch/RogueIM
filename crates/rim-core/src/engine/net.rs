@@ -86,6 +86,32 @@ pub fn build_swarm(device: Keypair, opts: NetOpts) -> Result<Swarm<Behaviour>> {
     Ok(swarm)
 }
 
+/// Public libp2p nodes (the IPFS bootstrap set). They tell us our outside
+/// address and may relay the few bytes a hole punch needs. They never see
+/// message content; like Nostr relays, they see our IP address.
+pub const PUBLIC_HELPERS: [&str; 6] = [
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmNnooDu7bfjPFoTZYxMNLWUQJyrVwtbZg5gBMjTezGAJN",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmQCU2EcMqAqQPR2i9bChDtGNJchTbq5TbXJJ16u19uLTa",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmbLHAnMoJPWSCR5Zhtx6BHJX9KiKNN6tpvbUcqanj75Nb",
+    "/dnsaddr/bootstrap.libp2p.io/p2p/QmcZf59bWwK5XFi76CZX8cbJ4BhTzzA3gU1ZjYZcYW3dwt",
+    "/dnsaddr/va1.bootstrap.libp2p.io/p2p/12D3KooWKnDdG3iXw9eTFijk3EWSunZcFi54Zka4wmtqtt6rPxc8",
+    "/ip4/104.131.131.82/udp/4001/quic-v1/p2p/QmaCpDMGvV2BGHeYERUEnRQAwe3N8SzbUtfsmvsqQLuvuJ",
+];
+
+/// Reachable from the internet at all (not LAN, loopback or relayed)?
+pub fn is_public(addr: &Multiaddr) -> bool {
+    !is_relayed(addr)
+        && addr.iter().all(|p| match p {
+            Protocol::Ip4(ip) => !(ip.is_private() || ip.is_loopback() || ip.is_link_local() || ip.is_unspecified() || (ip.octets()[0] == 100 && (64..128).contains(&ip.octets()[1]))),
+            Protocol::Ip6(ip) => !(ip.is_loopback() || ip.is_unspecified() || (ip.segments()[0] & 0xfe00) == 0xfc00 || (ip.segments()[0] & 0xffc0) == 0xfe80),
+            _ => true,
+        })
+}
+
+pub fn is_quic(addr: &Multiaddr) -> bool {
+    addr.iter().any(|p| matches!(p, Protocol::QuicV1))
+}
+
 pub fn is_relayed(addr: &Multiaddr) -> bool {
     addr.iter().any(|p| matches!(p, Protocol::P2pCircuit))
 }
@@ -115,12 +141,18 @@ impl Engine {
         peer.parse::<PeerId>().map(|p| self.swarm.is_connected(&p)).unwrap_or(false)
     }
 
-    /// Dial the configured bootstrap / relay nodes.
+    fn helpers(&self) -> Vec<String> {
+        if self.p.net.public_helpers && !self.loopback { PUBLIC_HELPERS.iter().map(|s| s.to_string()).collect() } else { vec![] }
+    }
+
+    /// Dial the configured bootstrap / relay nodes and the public helpers.
     pub fn dial_bootstrap(&mut self) {
         if self.p.net.lan_only {
             return;
         }
-        for a in self.p.net.bootstrap.clone() {
+        let mut all = self.p.net.bootstrap.clone();
+        all.extend(self.helpers());
+        for a in all {
             if let Ok(ma) = a.parse::<Multiaddr>() {
                 if let Some(pid) = peer_of(&ma) {
                     self.swarm.add_peer_address(pid, ma.clone());
@@ -172,6 +204,15 @@ impl Engine {
                 let _ = self.swarm.dial(pid);
             }
         }
+        // Stay connected to at least one public helper: that keeps our router's
+        // mapping (and so our observed address) alive for hole punching.
+        let helpers = self.helpers();
+        if !helpers.is_empty() && !self.p.net.lan_only {
+            let connected = helpers.iter().filter_map(|a| a.parse::<Multiaddr>().ok()).filter_map(|m| peer_of(&m)).any(|p| self.swarm.is_connected(&p));
+            if !connected {
+                self.dial_bootstrap();
+            }
+        }
         // Presence to everyone connected, outbox retries.
         self.broadcast_presence();
         self.flush_all_outboxes();
@@ -203,6 +244,7 @@ impl Engine {
                 })
                 .collect(),
             circuits: self.external.iter().filter(|a| is_relayed(a)).map(|a| a.to_string()).collect(),
+            observed: self.observed.iter().map(|a| a.to_string()).collect(),
             bandwidth_kbps: self.p.net.bandwidth_kbps,
         };
         self.emit(Event::Net(v));
@@ -227,6 +269,9 @@ impl Engine {
             }
             SwarmEvent::ExternalAddrExpired { address } => {
                 self.external.retain(|a| a != &address);
+            }
+            SwarmEvent::ConnectionEstablished { peer_id, .. } if self.no_direct && self.owner_of_peer(&peer_id.to_string()).is_some() => {
+                let _ = self.swarm.disconnect_peer_id(peer_id);
             }
             SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
                 let addr = match &endpoint {
@@ -274,6 +319,17 @@ impl Engine {
             SwarmEvent::Behaviour(BehaviourEvent::File(ev)) => self.on_file_rr(ev),
             SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
                 let hop = info.protocols.iter().any(|p| p.as_ref() == "/libp2p/circuit/relay/0.2.0/hop");
+                // How the internet sees us, as reported by a public node over QUIC
+                // (the same socket we listen on, so peers can punch to it).
+                let from_helper = self.helpers().iter().any(|h| h.contains(&peer_id.to_string()));
+                if from_helper && is_quic(&info.observed_addr) && is_public(&info.observed_addr) {
+                    let a = info.observed_addr.clone();
+                    if !self.observed.contains(&a) {
+                        self.observed.insert(0, a);
+                        self.observed.truncate(4);
+                        self.last_rdv_publish = 0;
+                    }
+                }
                 for a in &info.listen_addrs {
                     self.swarm.behaviour_mut().kad.add_address(&peer_id, a.clone());
                 }
@@ -292,8 +348,11 @@ impl Engine {
                         d.addrs.truncate(16);
                     }
                 }
-                // Use bootstrap nodes that offer relaying as our circuit relays.
-                if hop && self.p.net.bootstrap.iter().any(|b| b.contains(&peer_id.to_string())) && !self.p.net.lan_only {
+                // Use bootstrap nodes and public helpers that offer relaying as our
+                // circuit relays (at most two), for DCUtR hole punching.
+                let circuits = self.external.iter().filter(|a| is_relayed(a)).count();
+                let ours = self.p.net.bootstrap.iter().any(|b| b.contains(&peer_id.to_string()));
+                if hop && (ours || (from_helper && circuits < 2)) && !self.p.net.lan_only {
                     if let Some(a) = info.listen_addrs.iter().find(|a| !is_relayed(a) && !a.iter().any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback() || ip.is_private()))) {
                         let circuit = a.clone().with(Protocol::P2p(peer_id)).with(Protocol::P2pCircuit);
                         let _ = self.swarm.listen_on(circuit);

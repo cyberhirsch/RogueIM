@@ -721,7 +721,7 @@ impl Engine {
                 }
             }
             if online {
-                self.presence.insert(device.to_string(), PresenceRec { owner: owner.to_string(), pres: p, at: Instant::now() });
+                self.presence.insert(device.to_string(), PresenceRec { owner: owner.to_string(), pres: p, at: Instant::now(), ttl: PRESENCE_TTL });
             } else {
                 self.presence.remove(device);
             }
@@ -739,7 +739,7 @@ impl Engine {
             }
             e.truncate(16);
             if p.status != Status::Offline {
-                self.presence.insert(device.to_string(), PresenceRec { owner: "self".into(), pres: p, at: Instant::now() });
+                self.presence.insert(device.to_string(), PresenceRec { owner: "self".into(), pres: p, at: Instant::now(), ttl: PRESENCE_TTL });
             } else {
                 self.presence.remove(device);
             }
@@ -770,7 +770,7 @@ impl Engine {
     }
 
     /// What a given contact is allowed to see.
-    fn presence_for(&self, owner: &str) -> Option<Presence> {
+    pub fn presence_for(&self, owner: &str) -> Option<Presence> {
         let mut p = self.my_presence();
         if owner == "self" {
             return Some(p);
@@ -829,6 +829,8 @@ impl Engine {
         let prev = self.p.status;
         self.p.status = Status::Offline;
         self.broadcast_presence();
+        // Those who only see us via Nostr learn it too, instead of waiting for a timeout.
+        self.signal_presence_all();
         self.p.status = prev;
         let deadline = tokio::time::sleep(std::time::Duration::from_millis(600));
         tokio::pin!(deadline);
@@ -845,7 +847,7 @@ impl Engine {
     pub fn contact_status(&self, id: &str) -> Status {
         self.presence
             .values()
-            .filter(|r| r.owner == id && r.at.elapsed() < PRESENCE_TTL)
+            .filter(|r| r.owner == id && r.at.elapsed() < r.ttl)
             .max_by_key(|r| r.at)
             .map(|r| r.pres.status)
             .unwrap_or(Status::Offline)

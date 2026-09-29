@@ -245,6 +245,26 @@ fn device_sign(device: &Keypair, domain: &str, payload: &[u8]) -> Result<String>
     Ok(b64(&device.sign(&m)?))
 }
 
+/// Sign a Nostr signal with this device's key.
+pub fn sign_signal(device: &Keypair, mut s: Signal) -> Result<Signal> {
+    s.sig = String::new();
+    let payload = serde_json::to_vec(&(&s.from, &s.to, s.ts, &s.kind))?;
+    s.sig = device_sign(device, "rim-signal-v1", &payload)?;
+    Ok(s)
+}
+
+/// Check a signal's signature against the key inside its sender's peer id.
+pub fn verify_signal(s: &Signal) -> Result<()> {
+    let pk = peer_public_key(&s.from)?;
+    let mut m = b"rim-signal-v1".to_vec();
+    m.push(0);
+    m.extend_from_slice(&serde_json::to_vec(&(&s.from, &s.to, s.ts, &s.kind))?);
+    if !pk.verify(&m, &unb64(&s.sig)?) {
+        bail!("signal signature invalid");
+    }
+    Ok(())
+}
+
 /// Verify a device signature and that the device belongs to `list`.
 fn device_verify(list: &SignedDeviceList, device: &str, domain: &str, payload: &[u8], sig: &str) -> Result<()> {
     if !list.list.devices.iter().any(|d| d.peer_id == device) {

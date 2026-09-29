@@ -381,6 +381,26 @@ pub struct ContactSync {
     pub urgent_allowed: Option<bool>,
 }
 
+/// Short-lived, signed messages to one device via Nostr, for when no direct
+/// connection exists: presence, and coordination of a NAT hole punch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum SignalKind {
+    Presence(Presence),
+    /// "Dial me at these addresses now." `reply` = answer to a punch request.
+    Punch { addrs: Vec<String>, reply: bool },
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Signal {
+    /// Sending device (peer id; its key signs the signal).
+    pub from: String,
+    /// Receiving device.
+    pub to: String,
+    pub ts: i64,
+    pub kind: SignalKind,
+    pub sig: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SettingsSync {
     pub status: Option<Status>,
@@ -583,5 +603,7 @@ pub struct NetView {
     pub peers: Vec<String>,
     /// Relay circuits we can be reached through.
     pub circuits: Vec<String>,
+    /// Our address as public nodes see it (what hole punching aims at).
+    pub observed: Vec<String>,
     pub bandwidth_kbps: u32,
 }

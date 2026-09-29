@@ -195,6 +195,7 @@ impl Engine {
             nick: self.p.nick.clone(),
             send_typing: self.p.send_typing,
             bandwidth_kbps: self.p.net.bandwidth_kbps,
+            public_helpers: self.p.net.public_helpers,
         });
     }
 }

@@ -14,7 +14,7 @@ directories = "6"
 futures = "0.3.34"
 hex = "0.4.3"
 hkdf = "0.13.0"
-libp2p = { version = "0.56", features = ["tokio", "tcp", "quic", "noise", "yamux", "mdns", "request-response", "json", "macros", "identify", "ed25519", "kad", "relay", "dcutr", "autonat", "upnp", "ping", "dns"] }
+libp2p = { version = "0.56", features = ["tokio", "tcp", "quic", "noise", "yamux", "mdns", "request-response", "json", "macros", "identify", "ed25519", "kad", "relay", "dcutr", "autonat", "upnp", "ping", "dns", "rsa"] }
 nostr-sdk = "0.45"
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }

@@ -1277,11 +1277,12 @@ fn handle_event(app: &AppRc, ev: Event) {
                 if a.plugin_net.is_empty() { "  none".to_string() } else { a.plugin_net.iter().map(|(p, h, why)| format!("  {p} → {h} ({why})")).collect::<Vec<_>>().join("\n") }
             };
             let info = format!(
-                "peer {}\nNAT: {}\nconnected peers: {}\n{}\nrelay circuits:\n{}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {}{} · holding {} message(s)\nlast mailbox check: {}\nplugin network use:\n{}",
+                "peer {}\nNAT: {}\nconnected peers: {}\n{}\nseen from outside (for hole punching):\n{}\nrelay circuits:\n{}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {}{} · holding {} message(s)\nlast mailbox check: {}\nplugin network use:\n{}",
                 n.peer_id,
                 n.nat,
                 n.connected_peers,
                 lines(&n.peers),
+                if n.observed.is_empty() { "  not yet".to_string() } else { lines(&n.observed) },
                 if n.circuits.is_empty() { "  none".to_string() } else { lines(&n.circuits) },
                 lines(&n.listen),
                 lines(&n.external),
@@ -1301,7 +1302,8 @@ fn handle_event(app: &AppRc, ev: Event) {
             m.set_s_homepage(p.homepage.into());
             m.set_s_interests(p.interests.into());
         }
-        Event::Settings { auto_reply, read_receipts, relays, bootstrap, lan_only, helper, backup_dir, backup_hours, backup_keep, nick, send_typing, bandwidth_kbps } => {
+        Event::Settings { auto_reply, read_receipts, relays, bootstrap, lan_only, helper, backup_dir, backup_hours, backup_keep, nick, send_typing, bandwidth_kbps, public_helpers } => {
+            m.set_s_public_helpers(public_helpers);
             if !nick.is_empty() {
                 m.set_my_nick(nick.clone().into());
                 m.set_s_nick(nick.clone().into());
@@ -2136,6 +2138,7 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
                 }
                 "lan-only" => a.send(Command::SetLanOnly(m.get_s_lan_only())),
                 "helper" => a.send(Command::SetHelper(m.get_s_helper())),
+                "public-helpers" => a.send(Command::SetPublicHelpers(m.get_s_public_helpers())),
                 _ => {}
             }
             save_settings(&a.dir, &a.settings);

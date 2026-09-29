@@ -192,3 +192,24 @@ JSON lines over a local socket named in `RIM_PLUGIN_SOCKET`; see `crates/rim-plu
 * Nostr relays and DHT peers see IP addresses and timing; use Tor (not in v0.1) against that.
 * Device lists embedded in group states can lag for non-admin members; contacts always get fresh lists.
 * Olm fallback keys are reused for first contact with a device (as in Matrix), weakening forward secrecy of the first message until the recipient replies.
+
+## 12. Live delivery, signals and hole punching (v0.1.3)
+
+* **Live subscription.** Each device keeps a Nostr subscription (fixed ids `rim-mail`, `rim-signal`) open for its
+  own mailbox tags of yesterday, today and tomorrow. New mail arrives within about a second; the full mailbox fetch
+  runs every 120 s as a backstop. The subscription is renewed when the day changes.
+* **Signals** are kind **20333** (ephemeral: relays forward them to live subscribers and store nothing).
+  Tag `y` = first 16 bytes of `H("rim-sig-tag" || inbox seed || day)`, content sealed with
+  `H("rim-sig-enc" || inbox seed)`, signed by a throwaway Nostr key. The sealed content is a `Signal
+  {from, to, ts, kind, sig}` where `sig` is the sender device's Ed25519 signature over
+  `"rim-signal-v1\0" || json([from, to, ts, kind])`. Receivers accept signals only for themselves, within ±300 s,
+  from their own devices or authorized contacts.
+  * `Presence(Presence)`: sent every 60 s to each authorized device without a direct connection, with the same
+    visibility rules as direct presence. Valid for 150 s. A direct connection always takes precedence.
+  * `Punch{addrs, reply}`: public QUIC addresses of the sender as seen from outside. The receiver answers with its
+    own (`reply = true`). Both then dial each other three times, 1.5 s apart: the device with the smaller peer id
+    dials normally, the other dials "as listener" (QUIC hole punching: it sends packets to open its router and
+    accepts the incoming connection). At most one punch request per device every 90 s.
+* **Public helpers.** Unless disabled (`public_helpers`), devices connect to the public IPFS/libp2p bootstrap nodes.
+  Their identify reply tells a device its outside QUIC address; if they offer circuit relay v2, a device reserves up
+  to two circuits, so libp2p's own DCUtR hole punching also works. Helpers see IP addresses, never content.

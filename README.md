@@ -59,7 +59,8 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Files | Direct connections only, encrypted, BLAKE3-verified, resumable |
 | Multi-device | Link devices, sync contacts/settings/history/read state, rename, remote lock, revoke (the revoked device wipes its local data) |
 | Backup | Encrypted `.rimb` files (manual or scheduled), restore via passphrase or recovery words, history import |
-| Network | libp2p: QUIC + TCP/Noise, mDNS, Kademlia DHT, AutoNAT, relay v2, hole punching (DCUtR), UPnP, optional helper mode, LAN-only mode |
+| Network | libp2p: QUIC + TCP/Noise, mDNS, Kademlia DHT, AutoNAT, relay v2, UPnP, optional helper mode, LAN-only mode. Behind two home routers: hole punching coordinated over Nostr and via public libp2p helper nodes, no port forwarding needed in most cases |
+| Without a direct path | Messages over a live Nostr subscription (about a second), presence over short-lived Nostr signals |
 | Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), drag & drop files onto chats, tray with your own OS icon, notifications, per-event sounds, rebindable global hotkeys, autostart (optionally hidden), Away on screen lock, idle lock, optional passphrase in the OS keychain |
 | Themes | graphite (default), grey, green, amber; bundled Hack monospace font |
 | Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status |
@@ -69,9 +70,9 @@ Invites are single-use by default, expire, and carry a small proof of work.
 
 - Tested by hand on Windows 10 only. Linux and macOS builds compile in CI, but docking, idle detection
   and the player plugin have not been exercised there. Wayland docking works through XWayland only.
-- No default relay nodes are shipped. Behind strict NAT, two peers need UPnP, a shared LAN, or a
-  node you run yourself (see below) entered under settings → network → bootstrap. Messages still arrive
-  through the Nostr mailbox when no direct path exists; files do not.
+- Hole punching fails behind "symmetric" NAT (common on mobile networks and some CGNAT lines). Then chat and
+  presence still work over Nostr, but files need a direct path: UPnP, a port forward, or your own node
+  (see below) entered under settings → net → bootstrap.
 - The CalDAV mode of the todo plugin has not been tested against a real server yet.
 - "Remember on this computer" puts the passphrase in the OS keychain; anyone logged in as you can then open RIM. A remote lock removes it.
 - Only the three first-party plugins are loaded. Third-party plugins and plugin signing come later.

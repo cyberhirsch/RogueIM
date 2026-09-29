@@ -176,6 +176,16 @@ fn main() {
                 for a in n.listen.iter().chain(n.external.iter()) {
                     println!("listening: {a}/p2p/{}", n.peer_id);
                 }
+                println!("nat: {} · connected peers: {}", n.nat, n.connected_peers);
+                for a in &n.observed {
+                    println!("seen from outside: {a}");
+                }
+                for a in &n.circuits {
+                    println!("relay circuit: {a}");
+                }
+                for p in &n.peers {
+                    println!("peer: {p}");
+                }
             }
             Event::Pending(list) => {
                 for p in list {
@@ -348,6 +358,7 @@ fn run_control(h: &EngineHandle, contacts: &Contacts, line: &str) {
             None => println!("! unknown status {rest}"),
         },
         "away" => h.send(Command::SetAwayMessage(rest.to_string())),
+        "net" => h.send(Command::NetInfo),
         "invite" => h.send(Command::NewInvite { uses: Some(1), ttl_secs: None, label: String::new() }),
         "add" => {
             let (inv, text) = rest.split_once(' ').unwrap_or((rest, "Hi, please add me."));

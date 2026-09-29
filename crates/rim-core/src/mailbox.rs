@@ -9,7 +9,11 @@
 //! * Rendezvous: kind 30078 (NIP-78) replaceable event per device, authored by a
 //!   key derived from the rdv seed, content = encrypted listen addresses.
 
+use std::collections::HashMap;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
+
+use futures::StreamExt;
 
 use anyhow::{anyhow, Context, Result};
 use chacha20poly1305::aead::{Aead, KeyInit};
@@ -21,6 +25,8 @@ use crate::identity::{b64, unb64};
 
 pub const KIND_MAIL: u16 = 4333;
 pub const KIND_RDV: u16 = 30078;
+/// Ephemeral (NIP-16 range): relays pass it to live subscribers and keep nothing.
+pub const KIND_SIGNAL: u16 = 20333;
 pub const TTL_SECS: u64 = 14 * 24 * 3600;
 const DAYS_BACK: i64 = 15;
 
@@ -54,6 +60,23 @@ fn day(ts: i64) -> i64 {
 
 fn mail_tag(seed: &[u8; 32], day: i64) -> String {
     hex::encode(&h(&[b"rim-mbox-tag", seed, &day.to_le_bytes()])[..16])
+}
+
+fn signal_tag(seed: &[u8; 32], day: i64) -> String {
+    hex::encode(&h(&[b"rim-sig-tag", seed, &day.to_le_bytes()])[..16])
+}
+
+/// What the live subscription delivers.
+pub enum Live {
+    Mail(MailItem),
+    Signal(Vec<u8>),
+}
+
+#[derive(Default)]
+struct LiveState {
+    mail: HashMap<String, [u8; 32]>,
+    signal: HashMap<String, [u8; 32]>,
+    started: bool,
 }
 
 fn keys_from(material: [u8; 32]) -> Result<Keys> {
@@ -108,6 +131,21 @@ pub struct MailItem {
 pub struct Mailbox {
     client: Client,
     relays: Vec<String>,
+    live: Arc<Mutex<LiveState>>,
+}
+
+/// Check and open a mailbox event against the tags we listen for.
+fn open_mail(ev: &Event, tags: &HashMap<String, [u8; 32]>) -> Option<MailItem> {
+    let tag_of = |name: &str| ev.tags.iter().find(|t| t.kind() == name).and_then(|t| t.content()).map(str::to_string);
+    let (Some(y), Some(nonce)) = (tag_of("y"), tag_of("n")) else { return None };
+    let seed = tags.get(&y)?;
+    // Only accept events signed by the key derived from our seed and nonce.
+    let keys = keys_from(h(&[b"rim-mbox-key", seed, nonce.as_bytes()])).ok()?;
+    if keys.public_key() != ev.pubkey {
+        return None;
+    }
+    let payload = open(&h(&[b"rim-mbox-enc", seed]), &ev.content).ok()?;
+    Some(MailItem { seed: *seed, nonce, event_id: ev.id, payload })
 }
 
 impl Mailbox {
@@ -118,7 +156,7 @@ impl Mailbox {
             let _ = client.add_relay(r.as_str()).await;
         }
         client.connect().await;
-        Self { client, relays: relays.to_vec() }
+        Self { client, relays: relays.to_vec(), live: Default::default() }
     }
 
     pub async fn relay_status(&self) -> Vec<(String, bool)> {
@@ -169,21 +207,76 @@ impl Mailbox {
             .kind(Kind::Custom(KIND_MAIL))
             .custom_tags(SingleLetterTag::from_char('y').expect("letter"), tag_map.keys().cloned().collect::<Vec<_>>());
         let events = self.client.fetch_events(filter).timeout(Duration::from_secs(8)).await?;
-        let mut out = vec![];
-        for ev in events {
-            let tag_of = |name: &str| ev.tags.iter().find(|t| t.kind() == name).and_then(|t| t.content()).map(str::to_string);
-            let (Some(y), Some(nonce)) = (tag_of("y"), tag_of("n")) else { continue };
-            let Some(seed) = tag_map.get(&y) else { continue };
-            // Only accept events signed by the key derived from our seed and nonce.
-            let Ok(keys) = keys_from(h(&[b"rim-mbox-key", seed, nonce.as_bytes()])) else { continue };
-            if keys.public_key() != ev.pubkey {
-                continue;
-            }
-            if let Ok(payload) = open(&h(&[b"rim-mbox-enc", seed]), &ev.content) {
-                out.push(MailItem { seed: *seed, nonce, event_id: ev.id, payload });
+        Ok(events.into_iter().filter_map(|ev| open_mail(&ev, &tag_map)).collect())
+    }
+
+    /// Keep a live subscription open for new mail and signals to these inbox
+    /// seeds, so they arrive within a second instead of at the next poll.
+    /// Call again when the day changes (the tags rotate daily).
+    pub async fn listen(&self, seeds: &[[u8; 32]], deliver: impl Fn(Live) + Send + 'static) {
+        let today = day(Timestamp::now().as_secs() as i64);
+        let (mut mail, mut signal) = (HashMap::new(), HashMap::new());
+        for s in seeds {
+            // Yesterday and tomorrow too: clocks and midnight are never quite in sync.
+            for d in (today - 1)..=(today + 1) {
+                mail.insert(mail_tag(s, d), *s);
+                signal.insert(signal_tag(s, d), *s);
             }
         }
-        Ok(out)
+        let start = {
+            let mut st = self.live.lock().unwrap();
+            st.mail = mail.clone();
+            st.signal = signal.clone();
+            !std::mem::replace(&mut st.started, true)
+        };
+        if start {
+            let client = self.client.clone();
+            let live = self.live.clone();
+            tokio::spawn(async move {
+                let mut notes = client.notifications();
+                while let Some(n) = notes.next().await {
+                    let ClientNotification::Event { event, .. } = n else { continue };
+                    if event.kind == Kind::Custom(KIND_MAIL) {
+                        let tags = live.lock().unwrap().mail.clone();
+                        if let Some(item) = open_mail(&event, &tags) {
+                            deliver(Live::Mail(item));
+                        }
+                    } else if event.kind == Kind::Custom(KIND_SIGNAL) {
+                        let tags = live.lock().unwrap().signal.clone();
+                        let y = event.tags.iter().find(|t| t.kind() == "y").and_then(|t| t.content()).map(str::to_string);
+                        if let Some(seed) = y.and_then(|y| tags.get(&y).copied()) {
+                            if let Ok(bytes) = open(&h(&[b"rim-sig-enc", &seed]), &event.content) {
+                                deliver(Live::Signal(bytes));
+                            }
+                        }
+                    }
+                }
+            });
+        }
+        if seeds.is_empty() {
+            return;
+        }
+        let y = SingleLetterTag::from_char('y').expect("letter");
+        let since = Timestamp::from(Timestamp::now().as_secs().saturating_sub(300));
+        let mail_filter = Filter::new().kind(Kind::Custom(KIND_MAIL)).custom_tags(y, mail.keys().cloned().collect::<Vec<_>>()).since(since);
+        let sig_filter = Filter::new().kind(Kind::Custom(KIND_SIGNAL)).custom_tags(y, signal.keys().cloned().collect::<Vec<_>>()).since(since);
+        // Fixed ids: subscribing again replaces the previous REQ on each relay.
+        let _ = self.client.subscribe(mail_filter).with_id(SubscriptionId::new("rim-mail")).await;
+        let _ = self.client.subscribe(sig_filter).with_id(SubscriptionId::new("rim-signal")).await;
+    }
+
+    /// Send a short-lived signal to the device owning this inbox seed. Signed
+    /// by a throwaway Nostr key; the content is sealed and carries its own
+    /// device signature.
+    pub async fn post_signal(&self, seed: &[u8; 32], payload: &[u8]) -> Result<()> {
+        let keys = Keys::generate();
+        let now = Timestamp::now().as_secs();
+        let content = seal(&h(&[b"rim-sig-enc", seed]), payload)?;
+        let ev = EventBuilder::new(Kind::Custom(KIND_SIGNAL), content)
+            .tags([Tag::custom("y", [signal_tag(seed, day(now as i64))])])
+            .finalize(&keys)?;
+        self.client.send_event(&ev).await.context("signal post")?;
+        Ok(())
     }
 
     /// Ask relays to delete a fetched item (NIP-09), signed by its one-time key.

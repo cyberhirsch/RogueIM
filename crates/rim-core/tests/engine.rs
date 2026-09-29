@@ -367,3 +367,44 @@ fn offline_delivery_via_nostr() {
     a2.stop();
     b2.stop();
 }
+
+
+/// Two devices that can never connect directly (like two home routers): the
+/// request, chat and presence all go over Nostr, and chat arrives quickly
+/// thanks to the live subscription. Needs internet: `cargo test -- --ignored`.
+#[test]
+#[ignore]
+fn behind_two_routers_via_nostr() {
+    let a = Peer::start_isolated("alice", "pass-a");
+    let b = Peer::start_isolated("bob", "pass-b");
+    a.unlocked();
+    b.unlocked();
+    std::thread::sleep(Duration::from_secs(4));
+    let inv = a.invite();
+    b.send(Command::AddContact { invite: inv, text: "hi".into() });
+    let pid = a.wait(60, "auth request via nostr", |e| match e {
+        Event::Pending(v) => v.iter().find(|p| p.nick == "bob").map(|p| p.id.clone()),
+        _ => None,
+    });
+    a.send(Command::Accept { id: pid.clone() });
+    let alice_at_b = b.wait(60, "accepted via nostr", |e| match e {
+        Event::Contacts(v) => v.iter().find(|c| c.name == "alice" && !c.awaiting).map(|c| c.id.clone()),
+        _ => None,
+    });
+    // presence without a connection
+    b.wait(120, "alice online via nostr", |e| match e {
+        Event::Contacts(v) => v.iter().find(|c| c.id == alice_at_b && c.status == rim_core::Status::Online).map(|_| ()),
+        _ => None,
+    });
+    // chat latency over the live subscription
+    std::thread::sleep(Duration::from_secs(2));
+    let t0 = std::time::Instant::now();
+    b.send(text(&alice_at_b, "through the routers"));
+    got_text(&a, 60, "through the routers");
+    let took = t0.elapsed();
+    eprintln!("message took {:?} over nostr", took);
+    // send_wire tries directly first; after its timeout the mailbox takes over.
+    assert!(took < Duration::from_secs(40), "too slow: {took:?}");
+    a.stop();
+    b.stop();
+}

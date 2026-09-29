@@ -147,6 +147,7 @@ export component MainWindow inherits Window {
     in-out property <string> s-bootstrap;
     in-out property <bool> s-lan-only;
     in-out property <bool> s-helper;
+    in-out property <bool> s-public-helpers: true;
     in-out property <string> s-backup-dir;
     in-out property <string> s-backup-hours: "24";
     in-out property <string> s-backup-keep: "5";
@@ -804,6 +805,8 @@ export component MainWindow inherits Window {
                     spacing: 3px;
                     RCheck { text: "LAN only (no Nostr, no internet peers)"; checked <=> root.s-lan-only; toggled => { root.setting-toggled("lan-only"); } }
                     RCheck { text: "help the network (relay & hold mail for others)"; checked <=> root.s-helper; toggled => { root.setting-toggled("helper"); } }
+                    RCheck { text: "connect through routers (public libp2p helpers)"; checked <=> root.s-public-helpers; toggled => { root.setting-toggled("public-helpers"); } }
+                    RCaption { text: "Public IPFS/libp2p nodes tell RIM its outside address and help both sides punch through their routers. They see your IP address (like Nostr relays), never content."; wrap: word-wrap; }
                     HorizontalLayout {
                         spacing: 4px;
                         RCaption { text: "helper limit kbit/s (0 = none)"; vertical-alignment: center; }
