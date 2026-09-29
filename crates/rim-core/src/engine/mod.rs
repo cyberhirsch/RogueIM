@@ -80,6 +80,8 @@ pub struct EngineConfig {
     pub lan_only: Option<bool>,
     /// Disable mDNS (tests that must go through another path).
     pub no_mdns: bool,
+    /// Listen on 127.0.0.1 only (tests: no firewall prompts, no LAN exposure).
+    pub loopback: bool,
 }
 
 #[derive(Debug, Clone)]

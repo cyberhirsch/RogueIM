@@ -103,7 +103,11 @@ pub(super) async fn open(cfg: EngineConfig, ev: std::sync::mpsc::Sender<Event>, 
             let (store, plain) = Store::open(&cfg.dir, &cfg.passphrase)?;
             let v: serde_json::Value = serde_json::from_slice(&plain).context("state format")?;
             if v.get("version").and_then(|x| x.as_u64()) != Some(STATE_VERSION as u64) {
-                bail!("this profile was made by an older RogueIM prototype and cannot be opened by v0.1; create a new profile");
+                // The passphrase was right, so the user owns it: archive and start over.
+                let old = Store::path_in(&cfg.dir);
+                let archived = old.with_file_name("state.prototype.rim");
+                std::fs::rename(&old, &archived)?;
+                bail!("This profile came from the RogueIM prototype, which v0.1 cannot read. It was archived as {}. Create your v0.1 account now (your contacts need to add you again).", archived.display());
             }
             (store, serde_json::from_value::<Persist>(v)?)
         }
@@ -169,12 +173,15 @@ pub(super) async fn open(cfg: EngineConfig, ev: std::sync::mpsc::Sender<Event>, 
     let peer_id = device_key.public().to_peer_id();
     let mut swarm = net::build_swarm(
         device_key.clone(),
-        net::NetOpts { mdns: !cfg.no_mdns, upnp: p.net.upnp && !p.net.lan_only, relay_server: cfg.node || p.net.helper },
+        net::NetOpts { mdns: !cfg.no_mdns && !cfg.loopback, upnp: p.net.upnp && !p.net.lan_only && !cfg.loopback, relay_server: cfg.node || p.net.helper },
     )?;
-    let ip = if cfg.port == 0 { 0 } else { cfg.port };
-    swarm.listen_on(format!("/ip4/0.0.0.0/tcp/{ip}").parse()?)?;
-    swarm.listen_on(format!("/ip4/0.0.0.0/udp/{ip}/quic-v1").parse()?)?;
-    let _ = swarm.listen_on("/ip6/::/tcp/0".parse()?);
+    let port = cfg.port;
+    let host = if cfg.loopback { "127.0.0.1" } else { "0.0.0.0" };
+    swarm.listen_on(format!("/ip4/{host}/tcp/{port}").parse()?)?;
+    swarm.listen_on(format!("/ip4/{host}/udp/{port}/quic-v1").parse()?)?;
+    if !cfg.loopback {
+        let _ = swarm.listen_on("/ip6/::/tcp/0".parse()?);
+    }
 
     let mut e = Engine {
         store,
@@ -422,6 +429,7 @@ impl Engine {
                 seeds: c.seeds(),
                 authorized: c.authorized,
                 updated: c.updated,
+                addrs: c.addrs(),
             })
             .collect();
         let grant = LinkGrant {
@@ -683,6 +691,11 @@ impl Engine {
     }
 
     pub fn import_history(&mut self, path: &str, secret: RestoreSecret) -> Result<()> {
+        // An empty passphrase means "the one this device is unlocked with".
+        let secret = match secret {
+            RestoreSecret::Passphrase(p) if p.is_empty() => RestoreSecret::Passphrase(self.passphrase.clone()),
+            s => s,
+        };
         let data = read_backup(Path::new(path), &secret)?;
         if data.account_pk != self.p.account_pk {
             bail!("that backup belongs to another account");

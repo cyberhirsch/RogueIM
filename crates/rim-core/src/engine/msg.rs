@@ -1137,6 +1137,7 @@ impl Engine {
             verified: b.verified,
             ts: now(),
             sig: String::new(),
+            addrs: b.addrs(),
         };
         let bname = b.petname.clone();
         let aname = a.petname.clone();
@@ -1163,6 +1164,10 @@ impl Engine {
         c.awaiting = true;
         c.introduced_by = format!("{}{}", rec.from, if intro.verified { " (verified)" } else { "" });
         c.verified = false;
+        c.set_addrs(&intro.addrs);
+        for (peer, a) in &intro.addrs {
+            self.register_addrs(peer, a);
+        }
         self.p.contacts.push(c);
         let body = Body::AuthRequest { token: String::new(), card: self.my_card(), seeds: self.my_seeds(), text: text.to_string(), pow: 0, intro: Some(intro) };
         self.send_body(&id, body, Some(0))?;
@@ -1263,6 +1268,7 @@ impl Engine {
             seeds: c.seeds(),
             authorized: c.authorized,
             updated: c.updated,
+            addrs: c.addrs(),
         };
         let _ = self.send_body("self", Body::SyncContacts(vec![cs]), Some(0));
     }
@@ -1292,6 +1298,7 @@ impl Engine {
                         d.seeds = Some(s);
                     }
                 }
+                c.set_addrs(&cs.addrs);
             }
             None => {
                 if identity::verify_card(&cs.card).is_err() {
@@ -1307,9 +1314,13 @@ impl Engine {
                 c.authorized = cs.authorized;
                 c.awaiting = !cs.authorized && !cs.removed;
                 c.updated = cs.updated;
+                c.set_addrs(&cs.addrs);
                 newly_authorized = cs.authorized;
                 self.p.contacts.push(c);
             }
+        }
+        for (peer, a) in &cs.addrs {
+            self.register_addrs(peer, a);
         }
         if newly_authorized {
             // This device is new to the contact: introduce our seeds.

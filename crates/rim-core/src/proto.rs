@@ -297,6 +297,9 @@ pub struct Introduction {
     pub verified: bool,
     pub ts: i64,
     pub sig: String,
+    /// Last known addresses (hints, not signed).
+    #[serde(default)]
+    pub addrs: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -360,6 +363,9 @@ pub struct ContactSync {
     pub seeds: Vec<(String, DeviceSeeds)>,
     pub authorized: bool,
     pub updated: i64,
+    /// Last known addresses per device (hints).
+    #[serde(default)]
+    pub addrs: Vec<(String, Vec<String>)>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]

@@ -35,6 +35,7 @@ impl Peer {
             device_name: Some(format!("{name}-dev")),
             mode,
             relays: if internet { None } else { Some(vec![]) },
+            loopback: true,
             ..Default::default()
         });
         Peer { h, rx, dir, name: name.into() }

@@ -1,13 +1,25 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, RInput, OsIcon } from "theme.slint";
+import { Theme, RInput, OsIcon, RButton } from "theme.slint";
 
 export struct ChatLine {
+    id: string,
     time: string,
     who: string,
     text: string,
     mine: bool,
-    // "", "queued", "failed"
+    // "", "queued", "stored", "delivered", "read", "failed"
     state: string,
+    edited: bool,
+    deleted: bool,
+    urgent: bool,
+    expires: bool,
+    reply-text: string,
+    file-id: string,
+    file-name: string,
+    file-size: string,
+    file-progress: float,
+    // offered, waiting, transferring, paused, done, declined, failed, nodirect
+    file-state: string,
 }
 
 // Square glyph button for the title bar.
@@ -30,9 +42,18 @@ export component TButton inherits Rectangle {
     ta := TouchArea { clicked => { root.clicked(); } }
 }
 
+component LinkText inherits Text {
+    callback clicked;
+    color: ta.has-hover ? Theme.accent : Theme.dim;
+    font-size: 10px;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
 // Chat content: slim header bar (also the drag handle), log, input.
 // Title-bar buttons are passed in as children and placed at the right of the header.
 export component ChatPane inherits Rectangle {
+    // "contact", "group" or "notes"
+    in property <string> mode: "contact";
     in property <string> name;
     in property <string> fp;
     in property <string> status;
@@ -41,12 +62,24 @@ export component ChatPane inherits Rectangle {
     in property <string> device;
     in property <string> badge;
     in property <string> away;
+    in property <string> info;
     in property <bool> authorized: true;
+    in property <bool> typing;
     in property <[ChatLine]> lines;
-    callback send(string);
+    in-out property <string> reply-id;
+    in-out property <string> reply-text;
+    in-out property <bool> urgent;
+    callback send(string, bool, string);
+    callback typed();
+    callback line-action(string, string);
+    callback edit-commit(string, string);
+    callback file-send();
+    callback file-action(string, string);
     callback drag(length, length);
     callback header-double-clicked();
 
+    property <string> selected-id;
+    property <string> editing-id;
     property <bool> scroll-pending;
     changed lines => { root.scroll-pending = true; }
     Timer {
@@ -84,8 +117,8 @@ export component ChatPane inherits Rectangle {
                     horizontal-stretch: 1;
                     Text { text: root.name; color: Theme.fg; font-weight: 700; overflow: elide; }
                     Text {
-                        text: root.status + (root.away != "" ? " · " + root.away : "");
-                        color: root.tint;
+                        text: root.typing ? "typing…" : (root.status + (root.away != "" ? " · " + root.away : "") + (root.info != "" ? " · " + root.info : ""));
+                        color: root.typing ? Theme.accent : root.tint;
                         font-size: 10px;
                         overflow: elide;
                     }
@@ -106,44 +139,176 @@ export component ChatPane inherits Rectangle {
             background: Theme.panel;
             vertical-stretch: 1;
             list := ListView {
-                for l in root.lines: VerticalLayout {
-                    padding-left: 6px;
-                    padding-right: 6px;
-                    padding-top: 3px;
-                    padding-bottom: 1px;
-                    HorizontalLayout {
-                        spacing: 6px;
-                        Text { text: l.who; color: l.mine ? Theme.accent : Theme.other; font-weight: 700; font-size: 11px; }
-                        Text { text: l.time; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
-                        Rectangle { }
-                        if l.state != "": Text {
-                            text: l.state == "queued" ? "queued" : "failed";
-                            color: l.state == "failed" ? Theme.red : Theme.faint;
-                            font-size: 10px;
+                for l in root.lines: Rectangle {
+                    background: l.id == root.selected-id ? Theme.hover : transparent;
+                    VerticalLayout {
+                        padding-left: 6px;
+                        padding-right: 6px;
+                        padding-top: 3px;
+                        padding-bottom: 2px;
+                        spacing: 1px;
+                        Rectangle {
+                            height: 15px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: l.who; color: l.mine ? Theme.accent : Theme.other; font-weight: 700; font-size: 11px; }
+                                Text { text: l.time; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
+                                if l.urgent: Text { text: "urgent"; color: Theme.red; font-size: 10px; font-weight: 700; vertical-alignment: center; }
+                                if l.edited: Text { text: "edited"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
+                                if l.expires: Text { text: "⌛"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
+                                Rectangle { }
+                                if l.state != "": Text {
+                                    text: l.state;
+                                    color: l.state == "failed" ? Theme.red : (l.state == "read" ? Theme.accent : Theme.faint);
+                                    font-size: 10px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.selected-id = root.selected-id == l.id ? "" : l.id; }
+                            }
                         }
-                    }
-                    TextInput {
-                        text: l.text;
-                        read-only: true;
-                        single-line: false;
-                        wrap: word-wrap;
-                        color: l.state == "failed" ? Theme.red : (l.state == "queued" ? Theme.dim : Theme.fg);
-                        selection-background-color: Theme.accent;
-                        selection-foreground-color: Theme.on-accent;
+                        if l.reply-text != "": Text {
+                            text: "↳ " + l.reply-text;
+                            color: Theme.dim;
+                            font-size: 10px;
+                            overflow: elide;
+                        }
+                        if l.deleted: Text { text: "(deleted)"; color: Theme.faint; font-size: 11px; font-italic: true; }
+                        if !l.deleted && l.file-id == "" && l.id != root.editing-id: TextInput {
+                            text: l.text;
+                            read-only: true;
+                            single-line: false;
+                            wrap: word-wrap;
+                            color: l.state == "failed" ? Theme.red : (l.state == "queued" ? Theme.dim : Theme.fg);
+                            selection-background-color: Theme.accent;
+                            selection-foreground-color: Theme.on-accent;
+                        }
+                        if l.id == root.editing-id: RInput {
+                            text: l.text;
+                            accepted(t) => {
+                                root.edit-commit(l.id, t);
+                                root.editing-id = "";
+                            }
+                        }
+                        // file card
+                        if l.file-id != "": Rectangle {
+                            border-width: 1px;
+                            border-color: Theme.line;
+                            VerticalLayout {
+                                padding: 4px;
+                                spacing: 3px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text { text: "▤ " + l.file-name; color: Theme.fg; font-size: 11px; overflow: elide; horizontal-stretch: 1; }
+                                    Text { text: l.file-size; color: Theme.dim; font-size: 10px; }
+                                }
+                                if l.file-state == "transferring" || l.file-state == "paused" || l.file-state == "waiting": Rectangle {
+                                    height: 4px;
+                                    background: Theme.line;
+                                    Rectangle { x: 0; width: parent.width * max(0.0, min(1.0, l.file-progress)); background: Theme.accent; }
+                                }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: l.file-state == "nodirect" ? "no direct connection — same LAN, IPv6 or UPnP help; retrying"
+                                            : l.file-state == "offered" && !l.mine ? "offered"
+                                            : l.file-state == "offered" ? "waiting for them to accept"
+                                            : l.file-state;
+                                        color: l.file-state == "failed" || l.file-state == "nodirect" ? Theme.red : Theme.dim;
+                                        font-size: 10px;
+                                        wrap: word-wrap;
+                                        horizontal-stretch: 1;
+                                    }
+                                    if !l.mine && l.file-state == "offered": LinkText { text: "[accept]"; clicked => { root.file-action("accept", l.file-id); } }
+                                    if !l.mine && l.file-state == "offered": LinkText { text: "[decline]"; clicked => { root.file-action("decline", l.file-id); } }
+                                    if l.file-state == "transferring": LinkText { text: "[pause]"; clicked => { root.file-action("pause", l.file-id); } }
+                                    if l.file-state == "paused": LinkText { text: "[resume]"; clicked => { root.file-action("resume", l.file-id); } }
+                                    if l.file-state == "transferring" || l.file-state == "paused" || l.file-state == "waiting" || l.file-state == "nodirect": LinkText { text: "[cancel]"; clicked => { root.file-action("cancel", l.file-id); } }
+                                    if !l.mine && l.file-state == "done": LinkText { text: "[open folder]"; clicked => { root.file-action("open", l.file-id); } }
+                                }
+                            }
+                        }
+                        // actions for the selected line
+                        if l.id == root.selected-id && !l.deleted: HorizontalLayout {
+                            spacing: 10px;
+                            height: 14px;
+                            if root.mode != "notes": LinkText {
+                                text: "[reply]";
+                                clicked => {
+                                    root.reply-id = l.id;
+                                    root.reply-text = l.who + ": " + l.text;
+                                    root.selected-id = "";
+                                    input.focus();
+                                }
+                            }
+                            if l.mine && root.mode == "contact" && l.file-id == "": LinkText {
+                                text: "[edit]";
+                                clicked => {
+                                    root.editing-id = l.id;
+                                    root.selected-id = "";
+                                }
+                            }
+                            if root.mode == "contact": LinkText {
+                                text: l.mine ? "[delete for everyone]" : "[delete here]";
+                                clicked => {
+                                    root.line-action("delete", l.id);
+                                    root.selected-id = "";
+                                }
+                            }
+                            LinkText {
+                                text: "[copy]";
+                                clicked => {
+                                    root.line-action("copy", l.text);
+                                    root.selected-id = "";
+                                }
+                            }
+                        }
                     }
                 }
             }
         }
         Rectangle { height: 1px; background: Theme.line; }
 
-        input := RInput {
-            border-width: 0px;
-            placeholder: root.authorized ? "message…" : "waiting for authorization…";
-            accepted(t) => {
-                if (root.authorized && t != "") {
-                    root.send(t);
-                    input.text = "";
+        if root.reply-id != "": Rectangle {
+            height: 18px;
+            background: Theme.panel;
+            HorizontalLayout {
+                padding-left: 6px;
+                padding-right: 4px;
+                Text { text: "↳ " + root.reply-text; color: Theme.dim; font-size: 10px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
+                TButton { glyph: "x"; height: 18px; clicked => { root.reply-id = ""; root.reply-text = ""; } }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 0px;
+            if root.mode == "contact": TButton {
+                glyph: "!";
+                active: root.urgent;
+                height: 24px;
+                clicked => { root.urgent = !root.urgent; }
+            }
+            input := RInput {
+                border-width: 0px;
+                horizontal-stretch: 1;
+                placeholder: root.authorized ? (root.urgent ? "urgent message…" : "message…") : "waiting for authorization…";
+                edited => { root.typed(); }
+                accepted(t) => {
+                    if (root.authorized && t != "") {
+                        root.send(t, root.urgent, root.reply-id);
+                        input.text = "";
+                        root.urgent = false;
+                        root.reply-id = "";
+                        root.reply-text = "";
+                    }
                 }
+            }
+            if root.mode != "group": TButton {
+                glyph: "+";
+                height: 24px;
+                clicked => { root.file-send(); }
             }
         }
     }
@@ -159,13 +324,14 @@ export component ChatWindow inherits Window {
     no-frame: true;
     always-on-top: root.pinned;
     preferred-width: 360px;
-    preferred-height: 420px;
+    preferred-height: 440px;
     min-width: 240px;
     min-height: 180px;
     background: Theme.line;
     default-font-family: Theme.font;
     default-font-size: Theme.fs;
 
+    in property <string> mode: "contact";
     in property <string> name;
     in property <string> fp;
     in property <string> status;
@@ -174,12 +340,19 @@ export component ChatWindow inherits Window {
     in property <string> device;
     in property <string> badge;
     in property <string> away;
+    in property <string> info;
     in property <bool> authorized: true;
+    in property <bool> typing;
     in property <[ChatLine]> lines;
     in property <bool> is-max;
     in-out property <bool> pinned;
 
-    callback send(string);
+    callback send(string, bool, string);
+    callback typed();
+    callback line-action(string, string);
+    callback edit-commit(string, string);
+    callback file-send();
+    callback file-action(string, string);
     callback drag(length, length);
     callback resize(length, length);
     callback minimize();
@@ -193,6 +366,7 @@ export component ChatWindow inherits Window {
         y: 1px;
         width: parent.width - 2px;
         height: parent.height - 2px;
+        mode: root.mode;
         name: root.name;
         fp: root.fp;
         status: root.status;
@@ -201,9 +375,16 @@ export component ChatWindow inherits Window {
         device: root.device;
         badge: root.badge;
         away: root.away;
+        info: root.info;
         authorized: root.authorized;
+        typing: root.typing;
         lines: root.lines;
-        send(t) => { root.send(t); }
+        send(t, u, r) => { root.send(t, u, r); }
+        typed => { root.typed(); }
+        line-action(a, i) => { root.line-action(a, i); }
+        edit-commit(i, t) => { root.edit-commit(i, t); }
+        file-send => { root.file-send(); }
+        file-action(a, i) => { root.file-action(a, i); }
         drag(dx, dy) => { root.drag(dx, dy); }
         header-double-clicked => { root.toggle-maximize(); }
 

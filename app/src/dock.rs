@@ -1,15 +1,19 @@
-//! Edge docking of the buddy list (PRD DK-1, DK-5, DK-6).
+//! Edge docking of the buddy list (PRD DK-1..6).
 //!
 //! The buddy list is always docked and always on top.
-//! Windows: a real AppBar (SHAppBarMessage) that reserves screen space on the
-//! chosen monitor, so maximised windows there stay out of the strip — like ICQ.
-//! Other platforms: not yet in the prototype (X11 struts and Wayland
-//! layer-shell are planned).
+//! * Windows: a real AppBar (SHAppBarMessage) that reserves screen space on the
+//!   chosen monitor, so maximised windows there stay out of the strip.
+//! * Linux/X11 (also XWayland — the app prefers the X11 backend when both are
+//!   available): a dock-type window with `_NET_WM_STRUT_PARTIAL`, which window
+//!   managers (KWin, Mutter, Xfwm, Openbox, i3, …) honour.
+//! * macOS: no public API reserves screen space; the bar snaps to the edge,
+//!   floats above other windows and shows on every Space.
+//! `reserve = false` places the bar as an overlay (used while auto-hidden).
 
 /// A display, as far as docking cares.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Monitor {
-    /// Stable-ish id (Windows device name, e.g. `\\.\DISPLAY2`).
+    /// Stable-ish id (Windows device name, monitor name elsewhere).
     pub id: String,
     pub left: i32,
     pub top: i32,
@@ -20,10 +24,16 @@ pub struct Monitor {
     pub dpi: u32,
 }
 
+fn place(w: &slint::Window, x: i32, y: i32, width: u32, height: u32) {
+    w.set_position(slint::PhysicalPosition::new(x, y));
+    w.set_size(slint::PhysicalSize::new(width, height));
+}
+
 #[cfg(windows)]
 mod imp {
     use super::Monitor;
     use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+    use std::cell::Cell;
     use windows_sys::Win32::Foundation::{HWND, LPARAM, RECT, TRUE};
     use windows_sys::Win32::Graphics::Gdi::{EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW};
     use windows_sys::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
@@ -31,8 +41,6 @@ mod imp {
         SHAppBarMessage, ABE_LEFT, ABE_RIGHT, ABM_NEW, ABM_QUERYPOS, ABM_REMOVE, ABM_SETPOS, APPBARDATA,
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{MONITORINFOF_PRIMARY, WM_USER};
-
-    use std::cell::Cell;
 
     thread_local! {
         /// Whether our window is currently registered as an AppBar.
@@ -68,8 +76,7 @@ mod imp {
         TRUE
     }
 
-    /// All monitors, ordered left to right.
-    pub fn monitors() -> Vec<Monitor> {
+    pub fn monitors(_w: &slint::Window) -> Vec<Monitor> {
         let mut v: Vec<Monitor> = vec![];
         unsafe { EnumDisplayMonitors(std::ptr::null_mut(), std::ptr::null(), Some(collect), &mut v as *mut _ as LPARAM) };
         v.sort_by_key(|m| (m.left, m.top));
@@ -87,12 +94,15 @@ mod imp {
         }
     }
 
-    /// Register as an AppBar on the left or right edge of `mon` and move the
-    /// window into the reserved strip. Other windows on that monitor,
-    /// including maximised ones, are laid out in the remaining work area.
-    pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor) -> bool {
+    pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
         let Some(h) = hwnd(w) else { return false };
-        let width = (width_logical * mon.dpi as f32 / 96.0).round() as i32;
+        let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
+        if !reserve {
+            undock(w);
+            let x = if left { mon.left } else { mon.right - width };
+            super::place(w, x, mon.top, width as u32, (mon.bottom - mon.top) as u32);
+            return true;
+        }
         unsafe {
             let mut abd = data(h, left);
             // Register once. Re-registering (REMOVE + NEW) before every move
@@ -108,49 +118,129 @@ mod imp {
                 RECT { left: mon.right - width, top: mon.top, right: mon.right, bottom: mon.bottom }
             };
             SHAppBarMessage(ABM_QUERYPOS, &mut abd);
-            // QUERYPOS may shift the rect (e.g. a side taskbar); keep our width.
             if left {
                 abd.rc.right = abd.rc.left + width;
             } else {
                 abd.rc.left = abd.rc.right - width;
             }
             SHAppBarMessage(ABM_SETPOS, &mut abd);
-            w.set_position(slint::PhysicalPosition::new(abd.rc.left, abd.rc.top));
-            w.set_size(slint::PhysicalSize::new(width as u32, (abd.rc.bottom - abd.rc.top) as u32));
+            super::place(w, abd.rc.left, abd.rc.top, width as u32, (abd.rc.bottom - abd.rc.top) as u32);
         }
         true
     }
 
     pub fn undock(w: &slint::Window) {
         let Some(h) = hwnd(w) else { return };
-        unsafe {
-            let mut abd = data(h, false);
-            SHAppBarMessage(ABM_REMOVE, &mut abd);
+        if REGISTERED.get() {
+            unsafe {
+                let mut abd = data(h, false);
+                SHAppBarMessage(ABM_REMOVE, &mut abd);
+            }
+            REGISTERED.set(false);
         }
-        REGISTERED.set(false);
     }
 
-    pub const SUPPORTED: bool = true;
+    /// Mouse position in physical screen pixels.
+    pub fn cursor() -> Option<(i32, i32)> {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut p = POINT { x: 0, y: 0 };
+        (unsafe { GetCursorPos(&mut p) } != 0).then_some((p.x, p.y))
+    }
 }
 
 #[cfg(not(windows))]
 mod imp {
     use super::Monitor;
-    pub fn monitors() -> Vec<Monitor> {
-        vec![]
+    use slint::winit_030::WinitWindowAccessor;
+
+    pub fn monitors(w: &slint::Window) -> Vec<Monitor> {
+        let mut v = w
+            .with_winit_window(|ww| {
+                let primary = ww.primary_monitor();
+                ww.available_monitors()
+                    .map(|m| {
+                        let p = m.position();
+                        let s = m.size();
+                        Monitor {
+                            id: m.name().unwrap_or_else(|| format!("{}x{}@{},{}", s.width, s.height, p.x, p.y)),
+                            left: p.x,
+                            top: p.y,
+                            right: p.x + s.width as i32,
+                            bottom: p.y + s.height as i32,
+                            primary: primary.as_ref() == Some(&m),
+                            dpi: (m.scale_factor() * 96.0).round() as u32,
+                        }
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        v.sort_by_key(|m| (m.left, m.top));
+        v
     }
-    pub fn dock(_w: &slint::Window, _width: f32, _left: bool, _mon: &Monitor) -> bool {
-        false
+
+    #[cfg(target_os = "linux")]
+    fn x11_strut(w: &slint::Window, left: bool, width: i32, mon: &Monitor, reserve: bool) {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use x11rb::connection::Connection;
+        use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode};
+        use x11rb::wrapper::ConnectionExt as _;
+        let Ok(h) = w.window_handle().window_handle() else { return };
+        let win: u32 = match h.as_raw() {
+            RawWindowHandle::Xlib(x) => x.window as u32,
+            RawWindowHandle::Xcb(x) => x.window.get(),
+            _ => return,
+        };
+        let Ok((conn, screen)) = x11rb::connect(None) else { return };
+        let root = &conn.setup().roots[screen];
+        let (rw, rh) = (root.width_in_pixels as i32, root.height_in_pixels as i32);
+        let atom = |n: &str| conn.intern_atom(false, n.as_bytes()).ok().and_then(|c| c.reply().ok()).map(|r| r.atom);
+        let (Some(wt), Some(dock), Some(strut), Some(partial)) = (atom("_NET_WM_WINDOW_TYPE"), atom("_NET_WM_WINDOW_TYPE_DOCK"), atom("_NET_WM_STRUT"), atom("_NET_WM_STRUT_PARTIAL")) else { return };
+        let _ = conn.change_property32(PropMode::REPLACE, win, wt, AtomEnum::ATOM, &[dock]);
+        let (l, r) = if !reserve { (0, 0) } else if left { (mon.left + width, 0) } else { (0, rw - mon.right + width) };
+        let (ly0, ly1, ry0, ry1) = (mon.top, mon.bottom - 1, mon.top, mon.bottom - 1);
+        let _ = rh;
+        let _ = conn.change_property32(PropMode::REPLACE, win, strut, AtomEnum::CARDINAL, &[l as u32, r as u32, 0, 0]);
+        let _ = conn.change_property32(
+            PropMode::REPLACE,
+            win,
+            partial,
+            AtomEnum::CARDINAL,
+            &[l as u32, r as u32, 0, 0, ly0 as u32, ly1 as u32, ry0 as u32, ry1 as u32, 0, 0, 0, 0],
+        );
+        let _ = conn.flush();
     }
-    pub fn undock(_w: &slint::Window) {}
-    pub const SUPPORTED: bool = false;
+
+    pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
+        let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
+        let x = if left { mon.left } else { mon.right - width };
+        super::place(w, x, mon.top, width as u32, (mon.bottom - mon.top) as u32);
+        let _ = w.with_winit_window(|ww| ww.set_visible_on_all_workspaces(true));
+        #[cfg(target_os = "linux")]
+        x11_strut(w, left, width, mon, reserve);
+        let _ = reserve;
+        true
+    }
+
+    pub fn undock(w: &slint::Window) {
+        #[cfg(target_os = "linux")]
+        {
+            let m = Monitor { id: String::new(), left: 0, top: 0, right: 0, bottom: 0, primary: true, dpi: 96 };
+            x11_strut(w, false, 0, &m, false);
+        }
+        let _ = w;
+    }
+
+    pub fn cursor() -> Option<(i32, i32)> {
+        None
+    }
 }
 
-pub use imp::{dock, monitors, undock, SUPPORTED};
+pub use imp::{cursor, dock, monitors, undock};
 
 /// The monitor to dock on: the preferred one if connected, else the primary.
-pub fn pick(preferred: &str) -> Option<Monitor> {
-    let all = monitors();
+pub fn pick(w: &slint::Window, preferred: &str) -> Option<Monitor> {
+    let all = monitors(w);
     all.iter()
         .find(|m| m.id == preferred)
         .or_else(|| all.iter().find(|m| m.primary))

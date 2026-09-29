@@ -55,6 +55,7 @@ export component RInput inherits Rectangle {
     in property <string> placeholder;
     in property <bool> password;
     callback accepted(string);
+    callback edited();
     forward-focus: ti;
     height: 24px;
     border-width: 1px;
@@ -72,6 +73,7 @@ export component RInput inherits Rectangle {
         single-line: true;
         input-type: root.password ? InputType.password : InputType.text;
         accepted => { root.accepted(self.text); }
+        edited => { root.edited(); }
     }
     Text {
         x: 5px;
@@ -107,18 +109,118 @@ export component OsIcon inherits Rectangle {
         Text { text: root.os; color: root.tint; font-size: 6px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
     }
 
-    if root.device != "laptop" && root.device != "mobile": Rectangle {
+    if root.device == "group": Rectangle {
+        x: 2px; y: 2px; width: 30px; height: 22px;
+        Rectangle { x: 0px; y: 4px; width: 12px; height: 12px; border-width: 1px; border-color: root.tint; }
+        Rectangle { x: 9px; y: 0px; width: 12px; height: 12px; border-width: 1px; border-color: root.tint; background: Theme.bg; }
+        Rectangle { x: 18px; y: 6px; width: 12px; height: 12px; border-width: 1px; border-color: root.tint; background: Theme.bg; }
+    }
+    if root.device == "notes": Rectangle {
+        x: 6px; y: 0px; width: 22px; height: 26px;
+        border-width: 1px; border-color: root.tint;
+        Text { text: "me"; color: root.tint; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+    }
+
+    if root.device != "laptop" && root.device != "mobile" && root.device != "group" && root.device != "notes": Rectangle {
         x: 2px; y: 0px; width: 30px; height: 19px;
         border-width: 1px; border-color: root.tint;
         Text { text: root.os == "" ? "?" : root.os; color: root.tint; font-size: 8px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
     }
-    if root.device != "laptop" && root.device != "mobile": Rectangle { x: 14px; y: 19px; width: 6px; height: 4px; background: root.tint; }
-    if root.device != "laptop" && root.device != "mobile": Rectangle { x: 9px; y: 23px; width: 16px; height: 1px; background: root.tint; }
+    if root.device == "desktop" || root.device == "": Rectangle { x: 14px; y: 19px; width: 6px; height: 4px; background: root.tint; }
+    if root.device == "desktop" || root.device == "": Rectangle { x: 9px; y: 23px; width: 16px; height: 1px; background: root.tint; }
 
     // status badge, bottom-right
-    Rectangle {
+    if root.badge != "": Rectangle {
         x: parent.width - 11px; y: parent.height - 11px; width: 11px; height: 11px;
         background: root.tint;
         Text { text: root.badge; color: Theme.bg; font-size: 9px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
     }
+}
+
+// Checkbox: [x] label
+export component RCheck inherits Rectangle {
+    in-out property <bool> checked;
+    in property <string> text;
+    callback toggled(bool);
+    height: 20px;
+    HorizontalLayout {
+        spacing: 6px;
+        Text { text: root.checked ? "[x]" : "[ ]"; color: root.checked ? Theme.accent : Theme.dim; vertical-alignment: center; }
+        Text { text: root.text; color: Theme.fg; vertical-alignment: center; font-size: Theme.small; overflow: elide; }
+    }
+    TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            root.checked = !root.checked;
+            root.toggled(root.checked);
+        }
+    }
+}
+
+// Tab label for panel headers.
+export component RTab inherits Rectangle {
+    in property <string> text;
+    in property <bool> active;
+    callback clicked;
+    height: 20px;
+    background: root.active ? Theme.panel : transparent;
+    border-width: root.active ? 1px : 0px;
+    border-color: Theme.line;
+    HorizontalLayout {
+        padding-left: 5px;
+        padding-right: 5px;
+        Text { text: root.text; color: root.active ? Theme.accent : (ta.has-hover ? Theme.fg : Theme.dim); font-size: Theme.small; vertical-alignment: center; }
+    }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// Small caption above a group of controls.
+export component RCaption inherits Text {
+    color: Theme.dim;
+    font-size: Theme.small;
+}
+
+// Multi-line text input.
+export component RArea inherits Rectangle {
+    in-out property <string> text <=> ti.text;
+    in property <string> placeholder;
+    in property <bool> read-only;
+    in property <length> font-size: Theme.small;
+    forward-focus: ti;
+    border-width: 1px;
+    border-color: ti.has-focus ? Theme.fg : Theme.dim;
+    background: Theme.panel;
+    clip: true;
+    ti := TextInput {
+        x: 4px;
+        y: 3px;
+        width: parent.width - 8px;
+        height: parent.height - 6px;
+        single-line: false;
+        wrap: char-wrap;
+        read-only: root.read-only;
+        color: Theme.fg;
+        font-size: root.font-size;
+        selection-background-color: Theme.accent;
+        selection-foreground-color: Theme.on-accent;
+    }
+    Text {
+        x: 4px;
+        y: 3px;
+        visible: ti.text == "";
+        text: root.placeholder;
+        color: Theme.faint;
+        font-size: root.font-size;
+    }
+}
+
+// Menu entry for popups.
+export component RMenuItem inherits Rectangle {
+    in property <string> text;
+    in property <color> tone: Theme.fg;
+    callback clicked;
+    height: 20px;
+    background: ta.has-hover ? Theme.hover : transparent;
+    Text { x: 6px; height: parent.height; vertical-alignment: center; text: root.text; color: root.tone; font-size: Theme.small; }
+    ta := TouchArea { clicked => { root.clicked(); } }
 }

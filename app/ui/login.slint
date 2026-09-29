@@ -1,0 +1,144 @@
+import { Theme, RButton, RInput, RTab, RCaption, RArea, RCheck } from "theme.slint";
+
+// Create / unlock / link / restore, plus the one-time recovery key and the
+// linking code screens.
+export component LoginScreen inherits Rectangle {
+    in property <bool> new-account;
+    in property <bool> busy;
+    in property <string> error;
+    in property <string> profile;
+    in-out property <string> restore-path;
+    // "", "recovery", "link"
+    in property <string> stage;
+    in property <string> recovery-words;
+    in property <string> link-code;
+    in property <string> link-words;
+    callback create(string, string, string);
+    callback unlock(string);
+    callback start-link(string);
+    callback browse-backup();
+    callback restore(string, bool, string, string);
+    callback recovery-done();
+    callback copy-text(string);
+
+    property <int> tab: 0;
+    property <bool> wrote-down;
+    property <string> secret;
+
+    if root.stage == "": VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        alignment: center;
+        Text { text: "RogueIM"; color: Theme.fg; font-size: 28px; font-weight: 700; horizontal-alignment: center; }
+        Text { text: "serverless · encrypted · retro"; color: Theme.dim; font-size: Theme.small; horizontal-alignment: center; }
+        Text { text: "profile: " + root.profile; color: Theme.faint; font-size: Theme.small; horizontal-alignment: center; }
+        Rectangle { height: 8px; }
+
+        if !root.new-account: VerticalLayout {
+            spacing: 8px;
+            Text { text: "> unlock"; color: Theme.accent; }
+            upass := RInput {
+                placeholder: "passphrase";
+                password: true;
+                accepted => { root.unlock(upass.text); }
+            }
+            RButton {
+                text: root.busy ? "working…" : "unlock";
+                enabled: !root.busy;
+                clicked => { root.unlock(upass.text); }
+            }
+        }
+
+        if root.new-account: VerticalLayout {
+            spacing: 6px;
+            HorizontalLayout {
+                spacing: 4px;
+                alignment: start;
+                RTab { text: "new account"; active: root.tab == 0; clicked => { root.tab = 0; } }
+                RTab { text: "link device"; active: root.tab == 1; clicked => { root.tab = 1; } }
+                RTab { text: "restore"; active: root.tab == 2; clicked => { root.tab = 2; } }
+            }
+            if root.tab == 0: VerticalLayout {
+                spacing: 6px;
+                nick := RInput { placeholder: "nickname"; }
+                p1 := RInput { placeholder: "passphrase"; password: true; }
+                p2 := RInput {
+                    placeholder: "passphrase again";
+                    password: true;
+                    accepted => { root.create(nick.text, p1.text, p2.text); }
+                }
+                RButton {
+                    text: root.busy ? "working…" : "create account";
+                    enabled: !root.busy;
+                    clicked => { root.create(nick.text, p1.text, p2.text); }
+                }
+                Text {
+                    text: "Your identity is a keypair on this computer, encrypted with this passphrase. There is no server and no password reset — you will get a recovery key next.";
+                    color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+                }
+            }
+            if root.tab == 1: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Use your account on this computer too. Pick a passphrase for this device, then enter the code shown next on a device that already has your account (settings > devices).";
+                    color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+                }
+                lp := RInput { placeholder: "passphrase for this device"; password: true; accepted => { root.start-link(lp.text); } }
+                RButton { text: root.busy ? "working…" : "start linking"; enabled: !root.busy; clicked => { root.start-link(lp.text); } }
+            }
+            if root.tab == 2: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Restore from a .rimbackup file. This computer becomes a new device of your account; contacts see a new device, not a key change.";
+                    color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    bp := RInput { text <=> root.restore-path; placeholder: "backup file"; }
+                    RButton { text: "…"; clicked => { root.browse-backup(); } }
+                }
+                use-words := RCheck { text: "unlock with the 24-word recovery key"; }
+                if !use-words.checked: RInput { text <=> root.secret; placeholder: "backup passphrase"; password: true; }
+                if use-words.checked: RArea { text <=> root.secret; height: 52px; placeholder: "twenty-four recovery words…"; }
+                np := RInput { placeholder: "new passphrase for this device"; password: true; }
+                RButton {
+                    text: root.busy ? "working…" : "restore";
+                    enabled: !root.busy;
+                    clicked => { root.restore(root.restore-path, use-words.checked, root.secret, np.text); }
+                }
+            }
+        }
+        Text { text: root.error; color: Theme.red; wrap: word-wrap; font-size: Theme.small; }
+    }
+
+    if root.stage == "recovery": VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        alignment: center;
+        Text { text: "> recovery key"; color: Theme.accent; }
+        Text {
+            text: "Write these 24 words down and keep them offline. They open your backups if you forget the passphrase. They are shown only now.";
+            color: Theme.fg; wrap: word-wrap; font-size: Theme.small;
+        }
+        RArea { height: 110px; text: root.recovery-words; read-only: true; font-size: 13px; }
+        RButton { text: "copy"; clicked => { root.copy-text(root.recovery-words); } }
+        RCheck { text: "I wrote them down"; toggled(v) => { root.wrote-down = v; } }
+        RButton { text: "continue"; enabled: root.wrote-down; clicked => { root.recovery-done(); } }
+    }
+
+    if root.stage == "link": VerticalLayout {
+        padding: 16px;
+        spacing: 8px;
+        alignment: center;
+        Text { text: "> link this device"; color: Theme.accent; }
+        Text {
+            text: "On a device that already has your account: settings > devices > link, paste this code, check that both show the same words.";
+            color: Theme.fg; wrap: word-wrap; font-size: Theme.small;
+        }
+        RArea { height: 90px; text: root.link-code; read-only: true; font-size: 9px; }
+        RButton { text: "copy code"; clicked => { root.copy-text(root.link-code); } }
+        RCaption { text: "words to compare:"; }
+        Text { text: root.link-words; color: Theme.accent; font-size: 15px; font-weight: 700; wrap: word-wrap; horizontal-alignment: center; }
+        Text { text: "waiting for the other device…"; color: Theme.dim; font-size: Theme.small; horizontal-alignment: center; }
+    }
+}
