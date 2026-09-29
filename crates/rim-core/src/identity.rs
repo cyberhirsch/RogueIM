@@ -125,7 +125,11 @@ pub fn decode_invite(s: &str) -> Result<Invite> {
         bail!("this invite is from an older RogueIM version; ask for a new one");
     }
     let body = s.strip_prefix(INVITE_PREFIX).ok_or_else(|| anyhow!("not a RogueIM invite (must start with {INVITE_PREFIX})"))?;
-    let inv: Invite = serde_json::from_slice(&B64URL.decode(body).context("invite encoding")?)?;
+    // A damaged code is nearly always a copy problem: cut off by a messenger,
+    // or a character added or lost on the way.
+    const DAMAGED: &str = "this invite is incomplete or damaged; it was probably cut off or changed while being copied. Ask for it again (e.g. as a text file)";
+    let bytes = B64URL.decode(body).map_err(|_| anyhow!(DAMAGED))?;
+    let inv: Invite = serde_json::from_slice(&bytes).map_err(|_| anyhow!(DAMAGED))?;
     if inv.v != 2 {
         bail!("unsupported invite version {}", inv.v);
     }
