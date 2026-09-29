@@ -18,7 +18,7 @@ fn rand_suffix() -> u64 {
 }
 
 fn start(dir: &PathBuf, nick: &str, pass: &str) -> (EngineHandle, Receiver<Event>) {
-    spawn(EngineConfig { dir: dir.clone(), passphrase: pass.into(), nick: Some(nick.into()), port: 0 })
+    spawn(EngineConfig { dir: dir.clone(), passphrase: pass.into(), nick: Some(nick.into()), port: 0, ..Default::default() })
 }
 
 /// Wait until `f` returns Some for an event, failing after `secs`.
@@ -104,9 +104,9 @@ fn invite_authorize_chat_and_restart() {
     // Restart Alice: wrong passphrase fails, right one restores contacts and history.
     a.send(Command::Shutdown);
     wait(&arx, 10, "alice stopped", |e| matches!(e, Event::Stopped).then_some(()));
-    let (_a2, a2rx) = spawn(EngineConfig { dir: da.clone(), passphrase: "wrong".into(), nick: None, port: 0 });
+    let (_a2, a2rx) = spawn(EngineConfig { dir: da.clone(), passphrase: "wrong".into(), nick: None, port: 0, ..Default::default() });
     wait(&a2rx, 20, "login failure", |e| matches!(e, Event::LoginFailed(_)).then_some(()));
-    let (a3, a3rx) = spawn(EngineConfig { dir: da.clone(), passphrase: "pass-a".into(), nick: None, port: 0 });
+    let (a3, a3rx) = spawn(EngineConfig { dir: da.clone(), passphrase: "pass-a".into(), nick: None, port: 0, ..Default::default() });
     wait(&a3rx, 20, "alice restored contact", |e| match e {
         Event::Contacts(v) => v.iter().find(|c| c.name == "bob").map(|_| ()),
         _ => None,

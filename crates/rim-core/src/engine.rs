@@ -35,6 +35,7 @@ const MAX_ADDRS: usize = 16;
 
 // ---------- public API ----------
 
+#[derive(Default)]
 pub struct EngineConfig {
     /// Profile directory holding the encrypted state file.
     pub dir: PathBuf,
@@ -43,6 +44,10 @@ pub struct EngineConfig {
     pub nick: Option<String>,
     /// TCP/QUIC listen port; 0 picks a free one.
     pub port: u16,
+    /// Simulation/testing only: report this OS code instead of the detected one.
+    pub os_override: Option<String>,
+    /// Simulation/testing only: report this device class instead of the detected one.
+    pub device_override: Option<DeviceClass>,
 }
 
 #[derive(Debug, Clone)]
@@ -277,8 +282,8 @@ async fn run(cfg: EngineConfig, mut rx: mpsc::UnboundedReceiver<Command>, ev: st
         ev,
         my_card,
         my_curve,
-        os: device::os_code(),
-        device_class: device::device_class(),
+        os: cfg.os_override.clone().unwrap_or_else(device::os_code),
+        device_class: cfg.device_override.unwrap_or_else(device::device_class),
         listen: vec![],
         presence: HashMap::new(),
         in_flight: HashMap::new(),

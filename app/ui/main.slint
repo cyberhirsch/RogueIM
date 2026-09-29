@@ -61,6 +61,8 @@ export component MainWindow inherits Window {
     in property <bool> docked;
     in property <string> edge: "right";
     in property <string> theme-name;
+    in property <int> monitor-count: 1;
+    in property <string> monitor-label: "M1";
     // 0 = none, 1 = add contact, 2 = invite
     in-out property <int> panel: 0;
 
@@ -75,6 +77,8 @@ export component MainWindow inherits Window {
     callback remove-contact(string);
     callback switch-edge();
     callback next-theme();
+    callback next-monitor();
+    callback quit();
 
     // ---------- login ----------
     if !root.logged-in: VerticalLayout {
@@ -166,6 +170,8 @@ export component MainWindow inherits Window {
             Rectangle { }
             RButton { text: "theme"; tone: Theme.dim; clicked => { root.next-theme(); } }
             RButton { text: root.edge == "right" ? "<|" : "|>"; tone: Theme.dim; clicked => { root.switch-edge(); } }
+            if root.monitor-count > 1: RButton { text: root.monitor-label; tone: Theme.dim; clicked => { root.next-monitor(); } }
+            RButton { text: "x"; tone: Theme.red; clicked => { root.quit(); } }
         }
 
         // add contact panel

@@ -26,14 +26,17 @@ const DOCK_WIDTH: f32 = 280.0;
 
 /// Per-profile UI settings. Not secret, so plain JSON next to the state file.
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
+#[serde(default)]
 struct Settings {
     theme: String,
     dock_left: bool,
+    /// Preferred monitor id; falls back to the primary while it is disconnected.
+    monitor: String,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: "grey".into(), dock_left: false }
+        Self { theme: "graphite".into(), dock_left: false, monitor: String::new() }
     }
 }
 
@@ -61,10 +64,10 @@ struct Palette {
     on_accent: u32,
 }
 
-/// Grey (default, Win9x-era silver), Graphite (dark grey), Green and Amber (terminal).
+/// Graphite (default, dark grey), Grey (Win9x-era silver), Green and Amber (terminal).
 const THEMES: [Palette; 4] = [
-    Palette { name: "grey", dark: false, bg: 0xc0c0c0, panel: 0xffffff, line: 0x808080, fg: 0x000000, dim: 0x404040, faint: 0x808080, accent: 0x000080, red: 0xa00000, hover: 0xd8d8e8, on_accent: 0xffffff },
     Palette { name: "graphite", dark: true, bg: 0x1e1f22, panel: 0x2a2c30, line: 0x3a3d42, fg: 0xd6d6d6, dim: 0x8a8f98, faint: 0x54585f, accent: 0xe0a040, red: 0xff6b6b, hover: 0x34373c, on_accent: 0x1e1f22 },
+    Palette { name: "grey", dark: false, bg: 0xc0c0c0, panel: 0xffffff, line: 0x808080, fg: 0x000000, dim: 0x404040, faint: 0x808080, accent: 0x000080, red: 0xa00000, hover: 0xd8d8e8, on_accent: 0xffffff },
     Palette { name: "green", dark: true, bg: 0x070a07, panel: 0x0d130e, line: 0x1c3322, fg: 0x7cfc9a, dim: 0x3f7a4f, faint: 0x24402c, accent: 0xffb000, red: 0xff5b5b, hover: 0x1c3322, on_accent: 0x070a07 },
     Palette { name: "amber", dark: true, bg: 0x0a0700, panel: 0x140e02, line: 0x3a2a08, fg: 0xffb000, dim: 0x9a6a00, faint: 0x4a3500, accent: 0xffd870, red: 0xff5b5b, hover: 0x3a2a08, on_accent: 0x0a0700 },
 ];
@@ -127,6 +130,8 @@ struct App {
     notice_until: Option<Instant>,
     quitting: bool,
     settings: Settings,
+    /// Monitor layout at the last dock, to detect changes.
+    layout: Vec<dock::Monitor>,
     offset: UtcOffset,
 }
 
@@ -240,6 +245,52 @@ fn refresh_contacts(app: &Rc<RefCell<App>>, main: &MainWindow) {
     for c in &a.contacts {
         if let Some(w) = a.chats.get(&c.id) {
             update_chat_header(w, c, dark);
+        }
+    }
+}
+
+/// Dock on the preferred monitor (or the primary) at the chosen edge.
+/// Applied twice: moving to a monitor with a different DPI makes the window
+/// system rescale it, so the second pass pins the final size.
+fn redock(app: &Rc<RefCell<App>>, main: &MainWindow) {
+    let (left, pref) = {
+        let a = app.borrow();
+        (a.settings.dock_left, a.settings.monitor.clone())
+    };
+    let all = dock::monitors();
+    main.set_monitor_count(all.len() as i32);
+    let Some(mon) = dock::pick(&pref) else { return };
+    let idx = all.iter().position(|m| m.id == mon.id).map(|i| i + 1).unwrap_or(1);
+    main.set_monitor_label(format!("M{idx}").into());
+    app.borrow_mut().layout = all;
+    dock::dock(main.window(), DOCK_WIDTH, left, &mon);
+    let weak = main.as_weak();
+    slint::Timer::single_shot(Duration::from_millis(250), move || {
+        if let Some(m) = weak.upgrade() {
+            dock::dock(m.window(), DOCK_WIDTH, left, &mon);
+        }
+    });
+}
+
+/// Release the screen strip, hide chats, let the engine say goodbye, then quit.
+fn shutdown(app: &Rc<RefCell<App>>, main: &MainWindow) {
+    dock::undock(main.window());
+    let _ = main.hide();
+    let mut a = app.borrow_mut();
+    for w in a.chats.values() {
+        let _ = w.hide();
+    }
+    match a.engine.clone() {
+        Some(e) => {
+            a.quitting = true;
+            e.send(Command::Shutdown);
+            // Safety net if the engine never answers.
+            slint::Timer::single_shot(Duration::from_secs(3), || {
+                let _ = slint::quit_event_loop();
+            });
+        }
+        None => {
+            let _ = slint::quit_event_loop();
         }
     }
 }
@@ -359,6 +410,7 @@ fn main() {
         notice_until: None,
         quitting: false,
         settings,
+        layout: vec![],
         offset,
     }));
 
@@ -379,6 +431,7 @@ fn main() {
                 passphrase: pass.to_string(),
                 nick: Some(nick.to_string()),
                 port: a.port,
+                ..Default::default()
             });
             a.engine = Some(h);
             a.rx = Some(rx);
@@ -470,33 +523,38 @@ fn main() {
                 a.settings.dock_left
             };
             main.set_edge(if left { "left".into() } else { "right".into() });
-            dock::undock(main.window());
-            dock::dock(main.window(), DOCK_WIDTH, left);
+            redock(&app, &main);
         });
     }
     {
         let app = app.clone();
         let weak = main.as_weak();
-        main.window().on_close_requested(move || {
+        main.on_next_monitor(move || {
             let main = weak.unwrap();
-            dock::undock(main.window());
-            let mut a = app.borrow_mut();
-            for w in a.chats.values() {
-                let _ = w.hide();
+            let all = dock::monitors();
+            if all.len() < 2 {
+                return;
             }
-            match a.engine.clone() {
-                Some(e) => {
-                    a.quitting = true;
-                    e.send(Command::Shutdown);
-                    // Safety net if the engine never answers.
-                    slint::Timer::single_shot(Duration::from_secs(3), || {
-                        let _ = slint::quit_event_loop();
-                    });
-                }
-                None => {
-                    let _ = slint::quit_event_loop();
-                }
+            {
+                let mut a = app.borrow_mut();
+                let cur = dock::pick(&a.settings.monitor).map(|m| m.id).unwrap_or_default();
+                let i = all.iter().position(|m| m.id == cur).unwrap_or(0);
+                a.settings.monitor = all[(i + 1) % all.len()].id.clone();
+                save_settings(&a.dir, &a.settings);
             }
+            redock(&app, &main);
+        });
+    }
+    {
+        let app = app.clone();
+        let weak = main.as_weak();
+        main.on_quit(move || shutdown(&app, &weak.unwrap()));
+    }
+    {
+        let app = app.clone();
+        let weak = main.as_weak();
+        main.window().on_close_requested(move || {
+            shutdown(&app, &weak.unwrap());
             CloseRequestResponse::HideWindow
         });
     }
@@ -523,14 +581,28 @@ fn main() {
         });
     }
 
+    // Follow monitor changes (plugged in/out, resolution, scaling): re-dock,
+    // moving back to the preferred monitor when it reappears.
+    let watch = slint::Timer::default();
+    {
+        let app = app.clone();
+        let weak = main.as_weak();
+        watch.start(slint::TimerMode::Repeated, Duration::from_secs(2), move || {
+            let Some(main) = weak.upgrade() else { return };
+            if app.borrow().layout != dock::monitors() {
+                redock(&app, &main);
+            }
+        });
+    }
+
     main.show().expect("show");
     // Always docked: claim the screen strip once the frameless window exists.
     {
+        let app = app.clone();
         let weak = main.as_weak();
-        let left = app.borrow().settings.dock_left;
         slint::Timer::single_shot(Duration::from_millis(150), move || {
             if let Some(m) = weak.upgrade() {
-                dock::dock(m.window(), DOCK_WIDTH, left);
+                redock(&app, &m);
             }
         });
     }
