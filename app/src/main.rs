@@ -32,11 +32,13 @@ struct Settings {
     dock_left: bool,
     /// Preferred monitor id; falls back to the primary while it is disconnected.
     monitor: String,
+    /// Share of the bar given to the contact list when a chat is docked.
+    split: f32,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { theme: "graphite".into(), dock_left: false, monitor: String::new() }
+        Self { theme: "graphite".into(), dock_left: false, monitor: String::new(), split: 0.5 }
     }
 }
 
@@ -62,14 +64,15 @@ struct Palette {
     red: u32,
     hover: u32,
     on_accent: u32,
+    other: u32,
 }
 
 /// Graphite (default, dark grey), Grey (Win9x-era silver), Green and Amber (terminal).
 const THEMES: [Palette; 4] = [
-    Palette { name: "graphite", dark: true, bg: 0x1e1f22, panel: 0x2a2c30, line: 0x3a3d42, fg: 0xd6d6d6, dim: 0x8a8f98, faint: 0x54585f, accent: 0xe0a040, red: 0xff6b6b, hover: 0x34373c, on_accent: 0x1e1f22 },
-    Palette { name: "grey", dark: false, bg: 0xc0c0c0, panel: 0xffffff, line: 0x808080, fg: 0x000000, dim: 0x404040, faint: 0x808080, accent: 0x000080, red: 0xa00000, hover: 0xd8d8e8, on_accent: 0xffffff },
-    Palette { name: "green", dark: true, bg: 0x070a07, panel: 0x0d130e, line: 0x1c3322, fg: 0x7cfc9a, dim: 0x3f7a4f, faint: 0x24402c, accent: 0xffb000, red: 0xff5b5b, hover: 0x1c3322, on_accent: 0x070a07 },
-    Palette { name: "amber", dark: true, bg: 0x0a0700, panel: 0x140e02, line: 0x3a2a08, fg: 0xffb000, dim: 0x9a6a00, faint: 0x4a3500, accent: 0xffd870, red: 0xff5b5b, hover: 0x3a2a08, on_accent: 0x0a0700 },
+    Palette { name: "graphite", dark: true, bg: 0x1e1f22, panel: 0x2a2c30, line: 0x3a3d42, fg: 0xd6d6d6, dim: 0x8a8f98, faint: 0x54585f, accent: 0xe0a040, red: 0xff6b6b, hover: 0x34373c, on_accent: 0x1e1f22, other: 0x6cb6ff },
+    Palette { name: "grey", dark: false, bg: 0xc0c0c0, panel: 0xffffff, line: 0x808080, fg: 0x000000, dim: 0x404040, faint: 0x808080, accent: 0x000080, red: 0xa00000, hover: 0xd8d8e8, on_accent: 0xffffff, other: 0x7a3e9d },
+    Palette { name: "green", dark: true, bg: 0x070a07, panel: 0x0d130e, line: 0x1c3322, fg: 0x7cfc9a, dim: 0x3f7a4f, faint: 0x24402c, accent: 0xffb000, red: 0xff5b5b, hover: 0x1c3322, on_accent: 0x070a07, other: 0x00e5ff },
+    Palette { name: "amber", dark: true, bg: 0x0a0700, panel: 0x140e02, line: 0x3a2a08, fg: 0xffb000, dim: 0x9a6a00, faint: 0x4a3500, accent: 0xffd870, red: 0xff5b5b, hover: 0x3a2a08, on_accent: 0x0a0700, other: 0x9ad0ff },
 ];
 
 fn palette(name: &str) -> &'static Palette {
@@ -91,6 +94,7 @@ fn apply_theme(t: &Theme<'_>, p: &Palette) {
     t.set_red(rgb(p.red));
     t.set_hover(rgb(p.hover));
     t.set_on_accent(rgb(p.on_accent));
+    t.set_other(rgb(p.other));
 }
 
 /// Status colour; light themes get darker variants so they stay readable.
@@ -132,6 +136,9 @@ struct App {
     settings: Settings,
     /// Monitor layout at the last dock, to detect changes.
     layout: Vec<dock::Monitor>,
+    /// Chat shown in the lower half of the bar instead of its own window.
+    docked_chat: Option<String>,
+    main: slint::Weak<MainWindow>,
     offset: UtcOffset,
 }
 
@@ -192,6 +199,44 @@ fn update_chat_header(w: &ChatWindow, c: &ContactView, dark: bool) {
     w.set_authorized(!c.awaiting);
 }
 
+fn update_docked_header(main: &MainWindow, c: &ContactView, dark: bool) {
+    main.set_dchat_name(c.name.clone().into());
+    main.set_dchat_status(if c.awaiting { "awaiting authorization".into() } else { c.status.label().into() });
+    main.set_dchat_tint(tint(c.status, dark));
+    main.set_dchat_badge(c.status.badge().into());
+    main.set_dchat_os(c.os.clone().into());
+    main.set_dchat_device(c.device_class.as_str().into());
+    main.set_dchat_away(c.away_msg.clone().into());
+    main.set_dchat_authorized(!c.awaiting);
+}
+
+/// Move a chat into the lower half of the bar (only one at a time).
+fn dock_chat(app: &Rc<RefCell<App>>, id: &str) {
+    let (main, engine) = {
+        let mut a = app.borrow_mut();
+        let Some(main) = a.main.upgrade() else { return };
+        if let Some(w) = a.chats.get(id) {
+            let _ = w.hide();
+        }
+        a.docked_chat = Some(id.to_string());
+        if let Some(c) = a.contacts.iter().find(|c| c.id == id) {
+            update_docked_header(&main, c, a.dark());
+        }
+        (main, a.engine.clone())
+    };
+    main.set_dchat_lines(ModelRc::new(VecModel::from(Vec::<ChatLine>::new())));
+    main.set_chat_docked(true);
+    if let Some(e) = engine {
+        e.send(Command::OpenChat { id: id.to_string() });
+    }
+}
+
+fn move_window(w: &slint::Window, dx: f32, dy: f32) {
+    let s = w.scale_factor();
+    let p = w.position();
+    w.set_position(slint::PhysicalPosition::new(p.x + (dx * s) as i32, p.y + (dy * s) as i32));
+}
+
 fn parse_args() -> (String, u16) {
     let mut profile = "default".to_string();
     let mut port = 0u16;
@@ -214,6 +259,10 @@ fn profile_dir(profile: &str) -> PathBuf {
 }
 
 fn open_chat(app: &Rc<RefCell<App>>, id: &str) {
+    // Already docked in the bar: nothing to open.
+    if app.borrow().docked_chat.as_deref() == Some(id) {
+        return;
+    }
     let mut a = app.borrow_mut();
     let Some(engine) = a.engine.clone() else { return };
     if !a.chats.contains_key(id) {
@@ -222,6 +271,51 @@ fn open_chat(app: &Rc<RefCell<App>>, id: &str) {
         let eng = engine.clone();
         let cid = id.to_string();
         w.on_send(move |t| eng.send(Command::SendText { id: cid.clone(), body: t.to_string() }));
+        let weak = w.as_weak();
+        w.on_drag(move |dx, dy| {
+            if let Some(w) = weak.upgrade() {
+                if !w.window().is_maximized() {
+                    move_window(w.window(), dx, dy);
+                }
+            }
+        });
+        let weak = w.as_weak();
+        w.on_resize(move |dx, dy| {
+            if let Some(w) = weak.upgrade() {
+                let win = w.window();
+                let sc = win.scale_factor();
+                let sz = win.size();
+                let nw = (sz.width as f32 + dx * sc).max(240.0 * sc) as u32;
+                let nh = (sz.height as f32 + dy * sc).max(180.0 * sc) as u32;
+                win.set_size(slint::PhysicalSize::new(nw, nh));
+            }
+        });
+        let weak = w.as_weak();
+        w.on_minimize(move || {
+            if let Some(w) = weak.upgrade() {
+                w.window().set_minimized(true);
+            }
+        });
+        let weak = w.as_weak();
+        w.on_toggle_maximize(move || {
+            if let Some(w) = weak.upgrade() {
+                let m = !w.window().is_maximized();
+                w.window().set_maximized(m);
+                w.set_is_max(m);
+            }
+        });
+        let app2 = app.clone();
+        let cid = id.to_string();
+        w.on_dock(move || dock_chat(&app2, &cid));
+        let eng = engine.clone();
+        let cid = id.to_string();
+        let weak = w.as_weak();
+        w.on_close_chat(move || {
+            eng.send(Command::CloseChat { id: cid.clone() });
+            if let Some(w) = weak.upgrade() {
+                let _ = w.hide();
+            }
+        });
         let eng = engine.clone();
         let cid = id.to_string();
         w.window().on_close_requested(move || {
@@ -245,6 +339,9 @@ fn refresh_contacts(app: &Rc<RefCell<App>>, main: &MainWindow) {
     for c in &a.contacts {
         if let Some(w) = a.chats.get(&c.id) {
             update_chat_header(w, c, dark);
+        }
+        if a.docked_chat.as_deref() == Some(c.id.as_str()) {
+            update_docked_header(main, c, dark);
         }
     }
 }
@@ -310,7 +407,7 @@ fn set_my_status(main: &MainWindow, s: Status, dark: bool) {
 
 fn handle_event(app: &Rc<RefCell<App>>, main: &MainWindow, ev: Event) {
     match ev {
-        Event::Unlocked { nick, fingerprint, os, device_class, status } => {
+        Event::Unlocked { nick, fingerprint, os, device_class, status, away_msg } => {
             let mut a = app.borrow_mut();
             a.my_nick = nick.clone();
             a.my_status = status;
@@ -320,6 +417,7 @@ fn handle_event(app: &Rc<RefCell<App>>, main: &MainWindow, ev: Event) {
             main.set_my_fp(fingerprint.into());
             main.set_my_os(os.into());
             main.set_my_device(device_class.as_str().into());
+            main.set_away_msg(away_msg.into());
             set_my_status(main, status, a.dark());
         }
         Event::LoginFailed(msg) => {
@@ -342,15 +440,12 @@ fn handle_event(app: &Rc<RefCell<App>>, main: &MainWindow, ev: Event) {
         }
         Event::History { id, name, lines, .. } => {
             let a = app.borrow();
+            let rows: Vec<ChatLine> = lines.iter().map(|l| chat_line(l, &a.my_nick, &name, a.offset)).collect();
+            if a.docked_chat.as_deref() == Some(id.as_str()) {
+                main.set_dchat_lines(ModelRc::new(VecModel::from(rows.clone())));
+            }
             if let Some(w) = a.chats.get(&id) {
-                let rows: Vec<ChatLine> = lines.iter().map(|l| chat_line(l, &a.my_nick, &name, a.offset)).collect();
                 w.set_lines(ModelRc::new(VecModel::from(rows)));
-                let weak = w.as_weak();
-                slint::Timer::single_shot(Duration::from_millis(40), move || {
-                    if let Some(w) = weak.upgrade() {
-                        w.invoke_scroll_to_bottom();
-                    }
-                });
             }
         }
         Event::Invite(s) => {
@@ -372,7 +467,8 @@ fn handle_event(app: &Rc<RefCell<App>>, main: &MainWindow, ev: Event) {
             let (busy, open) = {
                 let a = app.borrow();
                 let busy = matches!(a.my_status, Status::Occupied | Status::DoNotDisturb);
-                let open = a.chats.get(&id).map(|w| w.window().is_visible()).unwrap_or(false);
+                let open = a.docked_chat.as_deref() == Some(id.as_str())
+                    || a.chats.get(&id).map(|w| w.window().is_visible()).unwrap_or(false);
                 (busy, open)
             };
             if !busy && !open {
@@ -397,6 +493,9 @@ fn main() {
     let main = MainWindow::new().expect("main window");
     apply_theme(&main.global::<Theme>(), palette(&settings.theme));
     main.set_theme_name(settings.theme.clone().into());
+    let names: Vec<SharedString> = THEMES.iter().map(|p| p.name.into()).collect();
+    main.set_theme_names(ModelRc::new(VecModel::from(names)));
+    main.set_split(settings.split);
     main.set_docked(dock::SUPPORTED);
     main.set_profile(profile.clone().into());
     main.set_new_account(!Store::exists(&dir));
@@ -417,8 +516,66 @@ fn main() {
         quitting: false,
         settings,
         layout: vec![],
+        docked_chat: None,
+        main: main.as_weak(),
         offset,
     }));
+
+    {
+        let app = app.clone();
+        let weak = main.as_weak();
+        main.on_set_away(move |t| {
+            if let Some(e) = &app.borrow().engine {
+                e.send(Command::SetAwayMessage(t.to_string()));
+            }
+            if let Some(m) = weak.upgrade() {
+                m.set_away_msg(t);
+            }
+        });
+    }
+    {
+        let app = app.clone();
+        main.on_split_changed(move |v| {
+            let mut a = app.borrow_mut();
+            a.settings.split = v;
+            save_settings(&a.dir, &a.settings);
+        });
+    }
+
+    // chat docked in the bar
+    {
+        let app = app.clone();
+        main.on_dchat_send(move |t| {
+            let a = app.borrow();
+            if let (Some(e), Some(id)) = (&a.engine, &a.docked_chat) {
+                e.send(Command::SendText { id: id.clone(), body: t.to_string() });
+            }
+        });
+    }
+    {
+        let app = app.clone();
+        let weak = main.as_weak();
+        main.on_dchat_undock(move || {
+            let Some(id) = app.borrow_mut().docked_chat.take() else { return };
+            if let Some(m) = weak.upgrade() {
+                m.set_chat_docked(false);
+            }
+            open_chat(&app, &id);
+        });
+    }
+    {
+        let app = app.clone();
+        let weak = main.as_weak();
+        main.on_dchat_close(move || {
+            let id = app.borrow_mut().docked_chat.take();
+            if let Some(m) = weak.upgrade() {
+                m.set_chat_docked(false);
+            }
+            if let (Some(id), Some(e)) = (id, app.borrow().engine.clone()) {
+                e.send(Command::CloseChat { id });
+            }
+        });
+    }
 
     // login / create
     {
@@ -495,12 +652,11 @@ fn main() {
     {
         let app = app.clone();
         let weak = main.as_weak();
-        main.on_next_theme(move || {
+        main.on_set_theme(move |name| {
             let main = weak.unwrap();
             let next = {
                 let mut a = app.borrow_mut();
-                let i = THEMES.iter().position(|p| p.name == a.settings.theme).unwrap_or(0);
-                let next = &THEMES[(i + 1) % THEMES.len()];
+                let next = palette(&name);
                 a.settings.theme = next.name.to_string();
                 save_settings(&a.dir, &a.settings);
                 for w in a.chats.values() {
@@ -513,8 +669,6 @@ fn main() {
             let status = app.borrow().my_status;
             set_my_status(&main, status, next.dark);
             refresh_contacts(&app, &main);
-            main.set_notice(format!("theme: {}", next.name).into());
-            app.borrow_mut().notice_until = Some(Instant::now() + Duration::from_secs(3));
         });
     }
     {

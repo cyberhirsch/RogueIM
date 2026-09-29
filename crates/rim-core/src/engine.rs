@@ -68,7 +68,7 @@ pub enum Command {
 
 #[derive(Debug, Clone)]
 pub enum Event {
-    Unlocked { nick: String, fingerprint: String, os: String, device_class: DeviceClass, status: Status },
+    Unlocked { nick: String, fingerprint: String, os: String, device_class: DeviceClass, status: Status, away_msg: String },
     LoginFailed(String),
     Contacts(Vec<ContactView>),
     Pending(Vec<PendingView>),
@@ -301,6 +301,7 @@ async fn run(cfg: EngineConfig, mut rx: mpsc::UnboundedReceiver<Command>, ev: st
         os: e.os.clone(),
         device_class: e.device_class,
         status: e.p.status,
+        away_msg: e.p.away_msg.clone(),
     });
     e.emit_contacts();
     e.emit_pending();

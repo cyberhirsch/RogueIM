@@ -1,5 +1,6 @@
 import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme, RButton, RInput, OsIcon } from "theme.slint";
+import { ChatPane, ChatLine, TButton } from "chat.slint";
 export { ChatWindow, ChatLine } from "chat.slint";
 export { Theme } from "theme.slint";
 
@@ -60,6 +61,10 @@ export component MainWindow inherits Window {
     in property <string> notice;
     in property <bool> docked;
     in property <string> theme-name;
+    in property <[string]> theme-names;
+    in property <string> away-msg;
+    // share of the split region given to the contact list when a chat is docked
+    in-out property <float> split: 0.5;
     in property <bool> can-move-left;
     in property <bool> can-move-right;
     // 0 = none, 1 = add contact, 2 = invite
@@ -74,10 +79,27 @@ export component MainWindow inherits Window {
     callback deny(string);
     callback open-chat(string);
     callback remove-contact(string);
-    callback next-theme();
+    callback set-theme(string);
+    callback set-away(string);
+    callback split-changed(float);
     // -1 = one docking position to the left, +1 = to the right
     callback move-dock(int);
     callback quit();
+
+    // chat docked into the lower half of the bar
+    in property <bool> chat-docked;
+    in property <string> dchat-name;
+    in property <string> dchat-status;
+    in property <color> dchat-tint;
+    in property <string> dchat-os;
+    in property <string> dchat-device;
+    in property <string> dchat-badge;
+    in property <string> dchat-away;
+    in property <bool> dchat-authorized: true;
+    in property <[ChatLine]> dchat-lines;
+    callback dchat-send(string);
+    callback dchat-undock();
+    callback dchat-close();
 
     // ---------- login ----------
     if !root.logged-in: VerticalLayout {
@@ -167,7 +189,7 @@ export component MainWindow inherits Window {
             RButton { text: "+ add"; clicked => { root.panel = root.panel == 1 ? 0 : 1; } }
             RButton { text: "invite"; clicked => { root.new-invite(); } }
             Rectangle { }
-            RButton { text: "theme"; tone: Theme.dim; clicked => { root.next-theme(); } }
+            RButton { text: "⚙"; tone: root.panel == 3 ? Theme.accent : Theme.dim; clicked => { root.panel = root.panel == 3 ? 0 : 3; } }
             RButton { text: "<"; tone: Theme.dim; enabled: root.can-move-left; clicked => { root.move-dock(-1); } }
             RButton { text: ">"; tone: Theme.dim; enabled: root.can-move-right; clicked => { root.move-dock(1); } }
             RButton { text: "x"; tone: Theme.red; clicked => { root.quit(); } }
@@ -188,6 +210,42 @@ export component MainWindow inherits Window {
                     spacing: 4px;
                     RButton { text: "request auth"; clicked => { root.add-contact(inv.text, msg.text); inv.text = ""; root.panel = 0; } }
                     RButton { text: "cancel"; tone: Theme.dim; clicked => { root.panel = 0; } }
+                }
+            }
+        }
+
+        // settings panel
+        if root.panel == 3: Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: Theme.dim;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+                Text { text: "> settings"; color: Theme.accent; font-size: Theme.small; }
+                Text { text: "theme"; color: Theme.dim; font-size: Theme.small; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    for t in root.theme-names: RButton {
+                        text: t;
+                        tone: t == root.theme-name ? Theme.accent : Theme.dim;
+                        clicked => { root.set-theme(t); }
+                    }
+                }
+                Text { text: "away message (shown when Away / N/A)"; color: Theme.dim; font-size: Theme.small; }
+                away-in := RInput {
+                    text: root.away-msg;
+                    placeholder: "e.g. back at 14:00";
+                    accepted(t) => { root.set-away(t); }
+                }
+                Text { text: "profile: " + root.profile; color: Theme.dim; font-size: Theme.small; }
+                Text { text: "fingerprint " + root.my-fp; color: Theme.dim; font-size: 9px; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    RButton { text: "save"; clicked => { root.set-away(away-in.text); root.panel = 0; } }
+                    RButton { text: "close"; tone: Theme.dim; clicked => { root.panel = 0; } }
                 }
             }
         }
@@ -248,73 +306,134 @@ export component MainWindow inherits Window {
             }
         }
 
-        // contacts
-        Rectangle {
-            border-width: 1px;
-            border-color: Theme.line;
-            background: Theme.panel;
+        // Split region: contact list, splitter, docked chat. Children are placed
+        // by hand so the splitter can size them without layout feedback loops.
+        // Fixed-size elements (e.g. future plugins) go outside this region.
+        region := Rectangle {
             vertical-stretch: 1;
-            if root.contacts.length == 0: Text {
-                x: 8px; y: 8px; width: parent.width - 16px;
-                text: "No contacts yet.\n\nClick [invite], send the code to a friend, or paste theirs with [+ add].";
-                color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
-            }
-            ListView {
-                for c in root.contacts: Rectangle {
-                    height: 38px;
-                    background: row-ta.has-hover ? Theme.hover : transparent;
-                    HorizontalLayout {
-                        padding-left: 6px;
-                        padding-right: 6px;
-                        spacing: 8px;
-                        OsIcon { os: c.os; device: c.device; tint: c.tint; badge: c.badge; y: 5px; }
-                        VerticalLayout {
-                            alignment: center;
-                            Text {
-                                text: c.name + (c.unread > 0 ? "  (" + c.unread + ")" : "");
-                                color: c.unread > 0 ? Theme.accent : (c.status == "Offline" ? Theme.dim : Theme.fg);
-                                font-weight: c.unread > 0 ? 700 : 400;
-                                overflow: elide;
-                            }
-                            Text {
-                                text: c.awaiting ? "awaiting authorization" : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
-                                color: c.awaiting ? Theme.accent : Theme.dim;
-                                font-size: Theme.small;
-                                overflow: elide;
-                            }
-                        }
-                    }
-                    row-ta := TouchArea {
-                        double-clicked => { root.open-chat(c.id); }
-                        pointer-event(e) => {
-                            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
-                                ctx.show();
-                            }
-                        }
-                    }
-                    ctx := PopupWindow {
-                        x: 40px; y: 30px; width: 160px;
-                        Rectangle {
-                            background: Theme.panel; border-width: 1px; border-color: Theme.fg;
+            property <length> gap: 6px;
+            property <length> top-h: root.chat-docked
+                ? max(60px, min(self.height - gap - 80px, (self.height - gap) * root.split))
+                : self.height;
+
+            // contacts
+            Rectangle {
+                x: 0; y: 0;
+                width: parent.width;
+                height: parent.top-h;
+                border-width: 1px;
+                border-color: Theme.line;
+                background: Theme.panel;
+                if root.contacts.length == 0: Text {
+                    x: 8px; y: 8px; width: parent.width - 16px;
+                    text: "No contacts yet.\n\nClick [invite], send the code to a friend, or paste theirs with [+ add].";
+                    color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+                }
+                ListView {
+                    for c in root.contacts: Rectangle {
+                        height: 38px;
+                        background: row-ta.has-hover ? Theme.hover : transparent;
+                        HorizontalLayout {
+                            padding-left: 6px;
+                            padding-right: 6px;
+                            spacing: 8px;
+                            OsIcon { os: c.os; device: c.device; tint: c.tint; badge: c.badge; y: 5px; }
                             VerticalLayout {
-                                padding: 4px;
-                                Rectangle {
-                                    height: 20px;
-                                    background: o-ta.has-hover ? Theme.hover : transparent;
-                                    Text { x: 4px; height: parent.height; vertical-alignment: center; text: "open chat"; color: Theme.fg; }
-                                    o-ta := TouchArea { clicked => { root.open-chat(c.id); } }
+                                alignment: center;
+                                Text {
+                                    text: c.name + (c.unread > 0 ? "  (" + c.unread + ")" : "");
+                                    color: c.unread > 0 ? Theme.accent : (c.status == "Offline" ? Theme.dim : Theme.fg);
+                                    font-weight: c.unread > 0 ? 700 : 400;
+                                    overflow: elide;
                                 }
-                                Rectangle {
-                                    height: 20px;
-                                    background: r-ta.has-hover ? Theme.hover : transparent;
-                                    Text { x: 4px; height: parent.height; vertical-alignment: center; text: "remove contact"; color: Theme.red; }
-                                    r-ta := TouchArea { clicked => { root.remove-contact(c.id); } }
+                                Text {
+                                    text: c.awaiting ? "awaiting authorization" : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
+                                    color: c.awaiting ? Theme.accent : Theme.dim;
+                                    font-size: Theme.small;
+                                    overflow: elide;
                                 }
-                                Text { x: 4px; text: c.fp; color: Theme.dim; font-size: 9px; wrap: word-wrap; }
+                            }
+                        }
+                        row-ta := TouchArea {
+                            double-clicked => { root.open-chat(c.id); }
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                    ctx.show();
+                                }
+                            }
+                        }
+                        ctx := PopupWindow {
+                            x: 40px; y: 30px; width: 160px;
+                            Rectangle {
+                                background: Theme.panel; border-width: 1px; border-color: Theme.fg;
+                                VerticalLayout {
+                                    padding: 4px;
+                                    Rectangle {
+                                        height: 20px;
+                                        background: o-ta.has-hover ? Theme.hover : transparent;
+                                        Text { x: 4px; height: parent.height; vertical-alignment: center; text: "open chat"; color: Theme.fg; }
+                                        o-ta := TouchArea { clicked => { root.open-chat(c.id); } }
+                                    }
+                                    Rectangle {
+                                        height: 20px;
+                                        background: r-ta.has-hover ? Theme.hover : transparent;
+                                        Text { x: 4px; height: parent.height; vertical-alignment: center; text: "remove contact"; color: Theme.red; }
+                                        r-ta := TouchArea { clicked => { root.remove-contact(c.id); } }
+                                    }
+                                    Text { x: 4px; text: c.fp; color: Theme.dim; font-size: 9px; wrap: word-wrap; }
+                                }
                             }
                         }
                     }
                 }
+            }
+
+            if root.chat-docked: Rectangle {
+                x: 0;
+                y: parent.top-h;
+                width: parent.width;
+                height: parent.gap;
+                Rectangle {
+                    y: (parent.height - 2px) / 2;
+                    height: 2px;
+                    width: 32px;
+                    x: (parent.width - 32px) / 2;
+                    background: split-ta.has-hover || split-ta.pressed ? Theme.accent : Theme.line;
+                }
+                split-ta := TouchArea {
+                    mouse-cursor: ns-resize;
+                    moved => {
+                        if (self.pressed) {
+                            root.split = max(0.1, min(0.9, root.split + (self.mouse-y - self.pressed-y) / (region.height - region.gap)));
+                        }
+                    }
+                    pointer-event(e) => {
+                        if (e.kind == PointerEventKind.up) {
+                            root.split-changed(root.split);
+                        }
+                    }
+                }
+            }
+
+            if root.chat-docked: ChatPane {
+                x: 0;
+                y: parent.top-h + parent.gap;
+                width: parent.width;
+                height: parent.height - parent.top-h - parent.gap;
+                border-width: 1px;
+                border-color: Theme.line;
+                name: root.dchat-name;
+                status: root.dchat-status;
+                tint: root.dchat-tint;
+                os: root.dchat-os;
+                device: root.dchat-device;
+                badge: root.dchat-badge;
+                away: root.dchat-away;
+                authorized: root.dchat-authorized;
+                lines: root.dchat-lines;
+                send(t) => { root.dchat-send(t); }
+                TButton { glyph: "^"; clicked => { root.dchat-undock(); } }
+                TButton { glyph: "x"; danger: true; clicked => { root.dchat-close(); } }
             }
         }
 
