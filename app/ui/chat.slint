@@ -1,5 +1,5 @@
 import { ListView } from "std-widgets.slint";
-import { Theme, RInput, OsIcon, RButton } from "theme.slint";
+import { Theme, RInput, OsIcon, RButton, Tip, TipLayer } from "theme.slint";
 
 export struct ChatLine {
     id: string,
@@ -27,6 +27,7 @@ export component TButton inherits Rectangle {
     in property <string> glyph;
     in property <bool> active;
     in property <bool> danger;
+    in property <string> tip;
     callback clicked;
     width: 22px;
     height: 20px;
@@ -39,7 +40,19 @@ export component TButton inherits Rectangle {
         horizontal-alignment: center;
         vertical-alignment: center;
     }
-    ta := TouchArea { clicked => { root.clicked(); } }
+    ta := TouchArea {
+        clicked => { Tip.text = ""; root.clicked(); }
+        changed has-hover => {
+            if (self.has-hover && root.tip != "") {
+                Tip.x = root.absolute-position.x;
+                Tip.top = root.absolute-position.y;
+                Tip.bottom = root.absolute-position.y + root.height;
+                Tip.text = root.tip;
+            } else if (!self.has-hover && Tip.text == root.tip) {
+                Tip.text = "";
+            }
+        }
+    }
 }
 
 component LinkText inherits Text {
@@ -286,7 +299,7 @@ export component ChatPane inherits Rectangle {
                 padding-left: 6px;
                 padding-right: 4px;
                 Text { text: "↳ " + root.reply-text; color: Theme.dim; font-size: 10px; overflow: elide; vertical-alignment: center; horizontal-stretch: 1; }
-                TButton { glyph: "x"; height: 18px; clicked => { root.reply-id = ""; root.reply-text = ""; } }
+                TButton { glyph: "x"; height: 18px; tip: "cancel the reply"; clicked => { root.reply-id = ""; root.reply-text = ""; } }
             }
         }
 
@@ -294,6 +307,7 @@ export component ChatPane inherits Rectangle {
             spacing: 0px;
             if root.mode == "contact": TButton {
                 glyph: "!";
+                tip: "urgent: breaks through Occupied / DND once (max 3 per hour)";
                 active: root.urgent;
                 height: 24px;
                 clicked => { root.urgent = !root.urgent; }
@@ -315,6 +329,7 @@ export component ChatPane inherits Rectangle {
             }
             if root.mode != "group": TButton {
                 glyph: "+";
+                tip: "send a file (direct connection only; you can also drop files here)";
                 height: 24px;
                 clicked => { root.file-send(); }
             }
@@ -398,11 +413,11 @@ export component ChatWindow inherits Window {
         drag(dx, dy) => { root.drag(dx, dy); }
         header-double-clicked => { root.toggle-maximize(); }
 
-        TButton { glyph: "*"; active: root.pinned; clicked => { root.pinned = !root.pinned; } }
-        TButton { glyph: "v"; clicked => { root.dock(); } }
-        TButton { glyph: "_"; clicked => { root.minimize(); } }
-        TButton { glyph: root.is-max ? "=" : "[]"; clicked => { root.toggle-maximize(); } }
-        TButton { glyph: "x"; danger: true; clicked => { root.close-chat(); } }
+        TButton { glyph: "*"; active: root.pinned; tip: root.pinned ? "pinned: stays on top (click to unpin)" : "pin: keep this chat on top"; clicked => { root.pinned = !root.pinned; } }
+        TButton { glyph: "v"; tip: "dock into the bar"; clicked => { root.dock(); } }
+        TButton { glyph: "_"; tip: "minimize"; clicked => { root.minimize(); } }
+        TButton { glyph: root.is-max ? "=" : "[]"; tip: root.is-max ? "restore" : "maximize"; clicked => { root.toggle-maximize(); } }
+        TButton { glyph: "x"; danger: true; tip: "close"; clicked => { root.close-chat(); } }
     }
 
     // resize grip, bottom-right
@@ -423,4 +438,6 @@ export component ChatWindow inherits Window {
     }
 
     init => { pane.focus-input(); }
+
+    TipLayer { }
 }

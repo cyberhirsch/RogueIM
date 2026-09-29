@@ -22,11 +22,53 @@ export global Theme {
     out property <length> small: 11px;
 }
 
+// Tooltip shared by one window: a hovered element puts its text and position
+// here, TipLayer draws it after a short delay.
+export global Tip {
+    in-out property <string> text;
+    in-out property <length> x;
+    in-out property <length> top;
+    in-out property <length> bottom;
+}
+
+// Put this last in a window. It never takes mouse input.
+export component TipLayer inherits Rectangle {
+    property <string> cur: Tip.text;
+    property <bool> shown;
+    changed cur => { root.shown = false; }
+    Timer {
+        interval: 550ms;
+        running: root.cur != "" && !root.shown;
+        triggered => { root.shown = true; }
+    }
+    if root.shown && root.cur != "": Rectangle {
+        property <length> w: min(root.width - 8px, min(230px, label.preferred-width + 10px));
+        property <length> h: label.preferred-height + 6px;
+        width: self.w;
+        height: self.h;
+        x: max(4px, min(Tip.x, root.width - self.w - 4px));
+        y: Tip.bottom + 2px + self.h > root.height ? max(0px, Tip.top - self.h - 2px) : Tip.bottom + 2px;
+        background: Theme.panel;
+        border-width: 1px;
+        border-color: Theme.fg;
+        label := Text {
+            x: 5px;
+            y: 3px;
+            width: parent.w - 10px;
+            text: root.cur;
+            color: Theme.fg;
+            font-size: Theme.small;
+            wrap: word-wrap;
+        }
+    }
+}
+
 // Bracketed text button: [ Add ]
 export component RButton inherits Rectangle {
     in property <string> text;
     in property <bool> enabled: true;
     in property <color> tone: Theme.fg;
+    in property <string> tip;
     callback clicked;
     height: 22px;
     border-width: 1px;
@@ -48,7 +90,17 @@ export component RButton inherits Rectangle {
     ta := TouchArea {
         enabled: root.enabled;
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => { Tip.text = ""; root.clicked(); }
+        changed has-hover => {
+            if (self.has-hover && root.tip != "") {
+                Tip.x = root.absolute-position.x;
+                Tip.top = root.absolute-position.y;
+                Tip.bottom = root.absolute-position.y + root.height;
+                Tip.text = root.tip;
+            } else if (!self.has-hover && Tip.text == root.tip) {
+                Tip.text = "";
+            }
+        }
     }
 }
 

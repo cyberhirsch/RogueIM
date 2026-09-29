@@ -23,7 +23,8 @@ use time::UtcOffset;
 
 slint::include_modules!();
 
-const DOCK_WIDTH: f32 = 280.0;
+const MIN_BAR: u32 = 200;
+const MAX_BAR: u32 = 640;
 const STRIP_WIDTH: f32 = 5.0;
 
 // ================================================================ settings & themes
@@ -33,6 +34,8 @@ const STRIP_WIDTH: f32 = 5.0;
 #[serde(default)]
 struct Settings {
     theme: String,
+    /// Width of the docked bar in logical pixels.
+    bar_width: u32,
     dock_left: bool,
     monitor: String,
     split: f32,
@@ -66,6 +69,7 @@ impl Default for Settings {
     fn default() -> Self {
         Self {
             theme: "graphite".into(),
+            bar_width: 280,
             dock_left: false,
             monitor: String::new(),
             split: 0.5,
@@ -909,18 +913,20 @@ fn position_index(all: &[dock::Monitor], id: &str, left: bool) -> usize {
 /// Applied twice: moving to a monitor with a different DPI makes the window
 /// system rescale it, so the second pass pins the final size.
 fn redock(app: &AppRc) {
-    let (m, left, pref, collapsed, autohide) = {
+    let (m, left, pref, collapsed, autohide, bar) = {
         let a = app.borrow();
         let Some(m) = a.main.upgrade() else { return };
-        (m, a.settings.dock_left, a.settings.monitor.clone(), a.collapsed, a.settings.autohide)
+        (m, a.settings.dock_left, a.settings.monitor.clone(), a.collapsed, a.settings.autohide, a.settings.bar_width.clamp(MIN_BAR, MAX_BAR) as f32)
     };
+    m.set_dock_left(left);
+    m.set_s_bar_width(bar.to_string().into());
     let all = dock::monitors(m.window());
     let Some(mon) = dock::pick(m.window(), &pref) else { return };
     let pos = position_index(&all, &mon.id, left);
     m.set_can_move_left(pos > 0);
     m.set_can_move_right(pos + 1 < all.len() * 2);
     app.borrow_mut().layout = all;
-    let (w, reserve) = if collapsed { (STRIP_WIDTH, false) } else { (DOCK_WIDTH, !autohide) };
+    let (w, reserve) = if collapsed { (STRIP_WIDTH, false) } else { (bar, !autohide) };
     dock::dock(m.window(), w, left, &mon, reserve);
     let weak = m.as_weak();
     slint::Timer::single_shot(Duration::from_millis(250), move || {
@@ -2149,10 +2155,27 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
             a.settings.auto_away = m.get_s_auto_away().trim().parse().unwrap_or(0);
             a.settings.auto_na = m.get_s_auto_na().trim().parse().unwrap_or(0);
             a.settings.lock_idle = m.get_s_lock_idle().trim().parse().unwrap_or(0);
+            if let Ok(w) = m.get_s_bar_width().trim().parse::<u32>() {
+                a.settings.bar_width = w.clamp(MIN_BAR, MAX_BAR);
+            }
             save_settings(&a.dir, &a.settings);
             a.send(Command::SetAwayMessage(m.get_away_msg().to_string()));
         }
+        redock(&ap);
         notice(&ap, "Saved.");
+    });
+    let ap = app.clone();
+    main.on_bar_resized(move |dx| {
+        {
+            let mut a = ap.borrow_mut();
+            let w = (a.settings.bar_width as f32 + dx).round().clamp(MIN_BAR as f32, MAX_BAR as f32) as u32;
+            if w == a.settings.bar_width {
+                return;
+            }
+            a.settings.bar_width = w;
+            save_settings(&a.dir, &a.settings);
+        }
+        redock(&ap);
     });
     let ap = app.clone();
     main.on_save_network(move || {

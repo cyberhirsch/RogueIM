@@ -1,5 +1,5 @@
 import { ListView, ScrollView } from "std-widgets.slint";
-import { Theme, RButton, RInput, OsIcon, RCheck, RTab, RCaption, RArea, RMenuItem } from "theme.slint";
+import { Theme, RButton, RInput, OsIcon, RCheck, RTab, RCaption, RArea, RMenuItem, Tip, TipLayer } from "theme.slint";
 import { ChatPane, ChatLine, TButton } from "chat.slint";
 import { LoginScreen } from "login.slint";
 export { ChatWindow, ChatLine } from "chat.slint";
@@ -120,6 +120,8 @@ export component MainWindow inherits Window {
     in property <bool> docked;
     in property <bool> can-move-left;
     in property <bool> can-move-right;
+    in property <bool> dock-left;
+    in-out property <string> s-bar-width: "280";
     in property <string> theme-name;
     in property <[string]> theme-names;
     in-out property <string> away-msg;
@@ -293,6 +295,7 @@ export component MainWindow inherits Window {
     callback plugin-cancel();
     callback plugin-move(string, int);
     callback save-hotkeys();
+    callback bar-resized(length);
     callback sound-toggle(int, bool);
     callback sound-cycle(int, int);
     callback sound-pick(int);
@@ -380,15 +383,15 @@ export component MainWindow inherits Window {
         HorizontalLayout {
             spacing: 1px;
             vertical-stretch: 0;
-            TButton { glyph: "+"; active: root.panel == 1; clicked => { root.panel = root.panel == 1 ? 0 : 1; } }
-            TButton { glyph: "@"; active: root.panel == 2; clicked => { root.panel = root.panel == 2 ? 0 : 2; } }
-            TButton { glyph: "#"; active: root.panel == 5; clicked => { root.panel = root.panel == 5 ? 0 : 5; } }
-            TButton { glyph: "?"; active: root.panel == 4; clicked => { root.panel = root.panel == 4 ? 0 : 4; } }
-            TButton { glyph: "⚙"; active: root.panel == 3; clicked => { root.panel = root.panel == 3 ? 0 : 3; } }
+            TButton { glyph: "+"; tip: "add a contact (paste their invite)"; active: root.panel == 1; clicked => { root.panel = root.panel == 1 ? 0 : 1; } }
+            TButton { glyph: "@"; tip: "invite someone: make a code to send them"; active: root.panel == 2; clicked => { root.panel = root.panel == 2 ? 0 : 2; } }
+            TButton { glyph: "#"; tip: "new group chat"; active: root.panel == 5; clicked => { root.panel = root.panel == 5 ? 0 : 5; } }
+            TButton { glyph: "?"; tip: "search all chats"; active: root.panel == 4; clicked => { root.panel = root.panel == 4 ? 0 : 4; } }
+            TButton { glyph: "⚙"; tip: "settings"; active: root.panel == 3; clicked => { root.panel = root.panel == 3 ? 0 : 3; } }
             Rectangle { }
-            TButton { glyph: "<"; clicked => { if (root.can-move-left) { root.move-dock(-1); } } }
-            TButton { glyph: ">"; clicked => { if (root.can-move-right) { root.move-dock(1); } } }
-            TButton { glyph: "x"; danger: true; clicked => { root.quit(); } }
+            TButton { glyph: "<"; tip: "move the bar one screen edge to the left"; clicked => { if (root.can-move-left) { root.move-dock(-1); } } }
+            TButton { glyph: ">"; tip: "move the bar one screen edge to the right"; clicked => { if (root.can-move-right) { root.move-dock(1); } } }
+            TButton { glyph: "x"; danger: true; tip: "quit RogueIM"; clicked => { root.quit(); } }
         }
 
         // ------------------------------------------------ panel: add contact / introductions
@@ -696,6 +699,11 @@ export component MainWindow inherits Window {
                     RCheck { text: "auto-hide the bar"; checked <=> root.s-autohide; toggled => { root.setting-toggled("autohide"); } }
                     HorizontalLayout {
                         spacing: 4px;
+                        RCaption { text: "bar width (px, or drag its inner edge)"; vertical-alignment: center; }
+                        RInput { text <=> root.s-bar-width; width: 50px; }
+                    }
+                    HorizontalLayout {
+                        spacing: 4px;
                         RCaption { text: "away after"; vertical-alignment: center; }
                         RInput { text <=> root.s-auto-away; width: 36px; }
                         RCaption { text: "min, N/A after"; vertical-alignment: center; }
@@ -726,10 +734,10 @@ export component MainWindow inherits Window {
                             spacing: 2px;
                             RCheck { text: r.label; checked: r.on; width: 84px; toggled(v) => { root.sound-toggle(i, v); } }
                             Text { text: r.source; color: Theme.dim; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                            RButton { text: "<"; clicked => { root.sound-cycle(i, -1); } }
-                            RButton { text: ">"; clicked => { root.sound-cycle(i, 1); } }
-                            RButton { text: "…"; clicked => { root.sound-pick(i); } }
-                            RButton { text: "▸"; clicked => { root.sound-play(i); } }
+                            RButton { text: "<"; tip: "previous built-in sound"; clicked => { root.sound-cycle(i, -1); } }
+                            RButton { text: ">"; tip: "next built-in sound"; clicked => { root.sound-cycle(i, 1); } }
+                            RButton { text: "…"; tip: "use your own sound file"; clicked => { root.sound-pick(i); } }
+                            RButton { text: "▸"; tip: "listen"; clicked => { root.sound-play(i); } }
                         }
                         RCaption { text: "< > built-in sounds · … your own file (wav, mp3, ogg, flac; up to 2 MB) · ▸ listen"; wrap: word-wrap; }
                     }
@@ -981,6 +989,16 @@ export component MainWindow inherits Window {
                             }
                         }
                         row-ta := TouchArea {
+                            changed has-hover => {
+                                if (self.has-hover) {
+                                    Tip.x = self.absolute-position.x + 40px;
+                                    Tip.top = self.absolute-position.y;
+                                    Tip.bottom = self.absolute-position.y + self.height;
+                                    Tip.text = c.kind == "contact" ? "double-click: chat · right-click: details, lists, folder" : c.kind == "group" ? "double-click: group chat · right-click: members" : c.kind == "notes" ? "notes to yourself, on all your devices" : "click: fold / unfold";
+                                } else {
+                                    Tip.text = "";
+                                }
+                            }
                             clicked => {
                                 if (c.kind == "folder") { root.toggle-folder(c.name); }
                                 else if (c.kind == "contact") { root.select-contact(c.id); }
@@ -1054,8 +1072,8 @@ export component MainWindow inherits Window {
                 edit-commit(i, t) => { root.dchat-edit(i, t); }
                 file-send => { root.dchat-file-send(); }
                 file-action(a, i) => { root.dchat-file-action(a, i); }
-                TButton { glyph: "^"; clicked => { root.dchat-undock(); } }
-                TButton { glyph: "x"; danger: true; clicked => { root.dchat-close(); } }
+                TButton { glyph: "^"; tip: "open in its own window"; clicked => { root.dchat-undock(); } }
+                TButton { glyph: "x"; danger: true; tip: "close this chat"; clicked => { root.dchat-close(); } }
             }
         }
 
@@ -1092,4 +1110,54 @@ export component MainWindow inherits Window {
         Text { text: root.notice; color: Theme.accent; font-size: Theme.small; wrap: word-wrap; visible: root.notice != ""; vertical-stretch: 0; }
         Text { text: "fp " + root.my-fp; color: Theme.faint; font-size: 9px; wrap: word-wrap; vertical-stretch: 0; }
     }
+
+    // ---------------------------------------------------------------- width handle on the inner edge
+    if root.logged-in && !root.collapsed && root.docked: handle := Rectangle {
+        property <length> d;
+        x: root.dock-left ? root.width - 5px : 0px;
+        y: 0px;
+        width: 5px;
+        height: root.height;
+        background: edge.has-hover || edge.pressed ? Theme.accent : transparent;
+        edge := TouchArea {
+            mouse-cursor: ew-resize;
+            moved => {
+                if (self.pressed) {
+                    handle.d = self.mouse-x - self.pressed-x;
+                }
+            }
+            pointer-event(e) => {
+                if (e.kind == PointerEventKind.up) {
+                    root.bar-resized(root.dock-left ? handle.d : -handle.d);
+                    handle.d = 0px;
+                }
+            }
+            changed has-hover => {
+                if (self.has-hover) {
+                    Tip.x = root.dock-left ? root.width - 160px : 8px;
+                    Tip.top = self.mouse-y;
+                    Tip.bottom = self.mouse-y + 12px;
+                    Tip.text = "drag to make the bar wider or narrower";
+                } else {
+                    Tip.text = "";
+                }
+            }
+        }
+        if edge.pressed && handle.d != 0px: Rectangle {
+            x: root.dock-left ? -70px : 8px;
+            y: edge.mouse-y;
+            width: 62px;
+            height: 18px;
+            background: Theme.accent;
+            Text {
+                text: round((root.width + (root.dock-left ? handle.d : -handle.d)) / 1px) + " px";
+                color: Theme.on-accent;
+                font-size: Theme.small;
+                horizontal-alignment: center;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    TipLayer { }
 }
