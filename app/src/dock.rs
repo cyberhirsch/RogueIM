@@ -94,6 +94,23 @@ mod imp {
         }
     }
 
+    /// No taskbar button (and no Alt+Tab entry) for the bar: it is always
+    /// visible, and the tray icon and hotkey reach it. A tool window has none.
+    pub fn hide_from_taskbar(w: &slint::Window) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, ShowWindow, GWL_EXSTYLE, SW_HIDE, SW_SHOWNOACTIVATE, WS_EX_APPWINDOW, WS_EX_TOOLWINDOW};
+        let Some(h) = hwnd(w) else { return };
+        unsafe {
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+            let want = (ex | WS_EX_TOOLWINDOW as isize) & !(WS_EX_APPWINDOW as isize);
+            if ex != want {
+                // The taskbar only notices the new style when the window reappears.
+                ShowWindow(h, SW_HIDE);
+                SetWindowLongPtrW(h, GWL_EXSTYLE, want);
+                ShowWindow(h, SW_SHOWNOACTIVATE);
+            }
+        }
+    }
+
     pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
         let Some(h) = hwnd(w) else { return false };
         let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
@@ -239,6 +256,11 @@ mod imp {
         true
     }
 
+    /// Linux: the bar is a dock-type window, which taskbars already skip.
+    /// macOS: the Dock shows apps, not windows; hiding the app icon would also
+    /// hide the chat windows, so it stays.
+    pub fn hide_from_taskbar(_w: &slint::Window) {}
+
     pub fn undock(w: &slint::Window) {
         #[cfg(target_os = "linux")]
         {
@@ -292,7 +314,7 @@ mod imp {
     }
 }
 
-pub use imp::{cursor, dock, monitors, undock};
+pub use imp::{cursor, dock, hide_from_taskbar, monitors, undock};
 
 /// The monitor to dock on: the preferred one if connected, else the primary.
 pub fn pick(w: &slint::Window, preferred: &str) -> Option<Monitor> {

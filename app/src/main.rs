@@ -927,6 +927,7 @@ fn redock(app: &AppRc) {
     m.set_can_move_right(pos + 1 < all.len() * 2);
     app.borrow_mut().layout = all;
     let (w, reserve) = if collapsed { (STRIP_WIDTH, false) } else { (bar, !autohide) };
+    dock::hide_from_taskbar(m.window());
     dock::dock(m.window(), w, left, &mon, reserve);
     let weak = m.as_weak();
     slint::Timer::single_shot(Duration::from_millis(250), move || {
