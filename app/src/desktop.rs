@@ -14,9 +14,11 @@ pub enum Sound {
     File,
 }
 
+const RATE: u32 = 22_050;
+
 /// Build a small 16-bit mono WAV from (frequency Hz, milliseconds) notes.
 fn tones(notes: &[(f32, u32)]) -> Vec<u8> {
-    let rate = 22_050u32;
+    let rate = RATE;
     let mut samples: Vec<i16> = vec![];
     for &(f, ms) in notes {
         let n = rate * ms / 1000;
@@ -28,6 +30,33 @@ fn tones(notes: &[(f32, u32)]) -> Vec<u8> {
             samples.push((v * i16::MAX as f32) as i16);
         }
     }
+    wav_bytes(samples)
+}
+
+/// Retro "blip ... bloop": notes as (start Hz, end Hz, milliseconds, decay per
+/// second); 0 Hz is a pause. The pitch sags towards the end of a note, the
+/// timbre is a soft square (odd harmonics), like an old sound chip.
+fn chirp(notes: &[(f32, f32, u32, f32)]) -> Vec<u8> {
+    let rate = RATE as f32;
+    let mut samples: Vec<i16> = vec![];
+    for &(f0, f1, ms, decay) in notes {
+        let n = (RATE * ms / 1000) as usize;
+        let mut phase = 0.0f32;
+        for i in 0..n {
+            let t = i as f32 / rate;
+            let x = i as f32 / n as f32;
+            let f = f0 + (f1 - f0) * x.powf(1.6);
+            phase += f / rate * std::f32::consts::TAU;
+            let env = (i as f32 / (0.004 * rate)).min(1.0) * (-decay * t).exp() * ((n - i) as f32 / (0.025 * rate)).min(1.0);
+            let v = if f0 == 0.0 { 0.0 } else { (phase.sin() + (3.0 * phase).sin() * 0.22 + (5.0 * phase).sin() * 0.08) * 0.22 * env };
+            samples.push((v * i16::MAX as f32) as i16);
+        }
+    }
+    wav_bytes(samples)
+}
+
+fn wav_bytes(samples: Vec<i16>) -> Vec<u8> {
+    let rate = RATE;
     let data_len = (samples.len() * 2) as u32;
     let mut w = Vec::with_capacity(44 + data_len as usize);
     w.extend_from_slice(b"RIFF");
@@ -51,7 +80,8 @@ fn tones(notes: &[(f32, u32)]) -> Vec<u8> {
 fn wav(s: Sound) -> Vec<u8> {
     match s {
         // two-note "blip-bloop", falling — our own, not ICQ's
-        Sound::Message => tones(&[(988.0, 70), (0.0, 30), (740.0, 110)]),
+        // short high blip, a pause, a longer tone a third lower that sags
+        Sound::Message => chirp(&[(784.0, 784.0, 85, 6.0), (0.0, 0.0, 105, 0.0), (622.0, 596.0, 300, 3.5)]),
         Sound::Urgent => tones(&[(1319.0, 80), (0.0, 50), (1319.0, 80), (0.0, 50), (1319.0, 120)]),
         Sound::Online => tones(&[(523.0, 60), (659.0, 60), (784.0, 120)]),
         Sound::Auth => tones(&[(392.0, 60), (0.0, 60), (392.0, 60)]),
@@ -409,5 +439,24 @@ pub fn remember(profile: &str, pass: &str) -> Result<(), String> {
 pub fn forget(profile: &str) {
     if let Some(e) = keychain(profile) {
         let _ = e.delete_credential();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Every sound is a valid, non-silent WAV. With RIM_SOUND_DIR set, the
+    /// sounds are also written there to listen to.
+    #[test]
+    fn sounds_render() {
+        for (name, s) in [("message", Sound::Message), ("urgent", Sound::Urgent), ("online", Sound::Online), ("auth", Sound::Auth), ("file", Sound::File)] {
+            let w = wav(s);
+            assert_eq!(&w[..4], b"RIFF");
+            assert!(w[44..].chunks(2).any(|c| i16::from_le_bytes([c[0], c[1]]).abs() > 1000), "{name} is silent");
+            if let Some(dir) = std::env::var_os("RIM_SOUND_DIR") {
+                std::fs::write(std::path::Path::new(&dir).join(format!("{name}.wav")), &w).unwrap();
+            }
+        }
     }
 }
