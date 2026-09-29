@@ -7177,7 +7177,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-player"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "interprocess",
  "objc2 0.6.4",
@@ -7192,7 +7192,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-pomodoro"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "interprocess",
  "rim-plugin-sdk",
@@ -7211,7 +7211,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-todo"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "base64 0.23.1",
  "keyring",
@@ -7250,7 +7250,7 @@ dependencies = [
 
 [[package]]
 name = "rogueim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "arboard",
  "auto-launch",

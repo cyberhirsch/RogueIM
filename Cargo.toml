@@ -3,7 +3,7 @@ resolver = "2"
 members = ["crates/rim-core", "crates/rim-cli", "crates/rim-plugin-sdk", "app", "plugins/pomodoro", "plugins/todo", "plugins/player"]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 license = "GPL-3.0-or-later"
 
