@@ -145,8 +145,9 @@ export component RCheck inherits Rectangle {
     height: 20px;
     HorizontalLayout {
         spacing: 6px;
-        Text { text: root.checked ? "[x]" : "[ ]"; color: root.checked ? Theme.accent : Theme.dim; vertical-alignment: center; }
-        Text { text: root.text; color: Theme.fg; vertical-alignment: center; font-size: Theme.small; overflow: elide; }
+        alignment: start;
+        Text { text: root.checked ? "[x]" : "[ ]"; color: root.checked ? Theme.accent : Theme.dim; vertical-alignment: center; horizontal-stretch: 0; }
+        Text { text: root.text; color: Theme.fg; vertical-alignment: center; horizontal-alignment: left; font-size: Theme.small; overflow: elide; horizontal-stretch: 1; }
     }
     TouchArea {
         mouse-cursor: pointer;

@@ -8,3 +8,16 @@ interprocess = "2"
 rim-core = { version = "0.1.0", path = "../rim-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+
+[package.metadata.deb]
+name = "rogueim-node"
+maintainer = "RogueIM"
+copyright = "RogueIM contributors, GPL-3.0-or-later"
+extended-description = "Headless RogueIM peer: node mode (relay, DHT server, mailbox helper), bot mode with a local JSON API, and a scripting CLI."
+section = "net"
+priority = "optional"
+assets = [
+    ["target/release/rim-cli", "usr/bin/rim-cli", "755"],
+    ["../../deploy/rogueim-node.service", "lib/systemd/system/rogueim-node.service", "644"],
+]
+maintainer-scripts = "../../deploy/"

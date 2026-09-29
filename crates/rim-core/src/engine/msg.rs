@@ -486,6 +486,7 @@ impl Engine {
                 self.p.pending.push(PendingRec { id, card: card.clone(), seeds, text, introduced_by, ts: now() });
                 self.save();
                 self.emit_pending();
+                self.emit_invites();
                 self.emit(Event::AuthRequested { name: card.nick });
                 Ok(())
             }

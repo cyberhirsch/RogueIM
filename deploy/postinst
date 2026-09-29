@@ -1,0 +1,14 @@
+#!/bin/sh
+set -e
+if ! getent passwd rogueim >/dev/null; then
+    adduser --system --group --home /var/lib/rogueim --no-create-home rogueim
+fi
+mkdir -p /var/lib/rogueim /etc/rogueim
+chown rogueim:rogueim /var/lib/rogueim
+chmod 700 /var/lib/rogueim
+if [ ! -f /etc/rogueim/node.env ]; then
+    echo "RIM_PASS=$(head -c 24 /dev/urandom | base64)" > /etc/rogueim/node.env
+    chmod 600 /etc/rogueim/node.env
+fi
+echo "RogueIM node installed. Start it with: sudo systemctl enable --now rogueim-node"
+echo "Its address for friends' bootstrap lists: journalctl -u rogueim-node | grep listening"

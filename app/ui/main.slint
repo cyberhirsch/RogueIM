@@ -48,9 +48,9 @@ component GadgetItemView inherits Rectangle {
     callback check(bool);
     min-height: 18px;
     horizontal-stretch: root.item.kind == "button" ? 0 : 1;
-    if root.item.kind == "title": Text { text: root.item.text; color: Theme.accent; font-size: Theme.small; font-weight: 700; vertical-alignment: center; overflow: elide; }
-    if root.item.kind == "text": Text { text: root.item.text; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; overflow: elide; }
-    if root.item.kind == "dim": Text { text: root.item.text; color: Theme.dim; font-size: 10px; vertical-alignment: center; wrap: word-wrap; }
+    if root.item.kind == "title": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.accent; font-size: Theme.small; font-weight: 700; vertical-alignment: center; horizontal-alignment: left; overflow: elide; }
+    if root.item.kind == "text": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-alignment: left; overflow: elide; }
+    if root.item.kind == "dim": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.dim; font-size: 10px; vertical-alignment: center; horizontal-alignment: left; wrap: word-wrap; }
     if root.item.kind == "button": RButton { text: root.item.text; clicked => { root.click(); } }
     if root.item.kind == "input": RInput {
         text: root.item.text;
@@ -64,7 +64,7 @@ component GadgetItemView inherits Rectangle {
         background: Theme.line;
         Rectangle { x: 0; width: parent.width * max(0.0, min(1.0, root.item.value)); background: Theme.accent; }
     }
-    if root.item.kind == "check": RCheck { text: root.item.text; checked: root.item.checked; toggled(v) => { root.check(v); } }
+    if root.item.kind == "check": RCheck { x: 0; width: parent.width; text: root.item.text; checked: root.item.checked; toggled(v) => { root.check(v); } }
 }
 
 
@@ -887,7 +887,7 @@ export component MainWindow inherits Window {
                 spacing: 3px;
                 Rectangle {
                     height: 14px;
-                    Text { text: (g.collapsed ? "▸ " : "▾ ") + g.name; color: Theme.dim; font-size: 10px; vertical-alignment: center; }
+                    Text { x: 0; width: parent.width; text: (g.collapsed ? "▸ " : "▾ ") + g.name; color: Theme.dim; font-size: 10px; vertical-alignment: center; horizontal-alignment: left; }
                     TouchArea { mouse-cursor: pointer; clicked => { root.gadget-collapse(g.id); } }
                 }
                 if !g.collapsed: VerticalLayout {

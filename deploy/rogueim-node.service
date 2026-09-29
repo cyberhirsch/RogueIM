@@ -1,0 +1,19 @@
+[Unit]
+Description=RogueIM node (relay, DHT server, mailbox helper)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=rogueim
+Group=rogueim
+EnvironmentFile=/etc/rogueim/node.env
+ExecStart=/usr/bin/rim-cli --node --dir /var/lib/rogueim --port 4001 --pass ${RIM_PASS}
+Restart=on-failure
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/rogueim
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

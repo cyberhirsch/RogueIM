@@ -1386,6 +1386,13 @@ fn main() {
         let app = app.clone();
         slint::Timer::single_shot(Duration::from_millis(150), move || redock(&app));
     }
+    // Debug builds only: log a test profile in without typing (UI smoke tests).
+    #[cfg(debug_assertions)]
+    if let Ok(pass) = std::env::var("RIM_DEV_PASS") {
+        let mut cfg = base_cfg(&app, &pass);
+        cfg.nick = Some(std::env::var("RIM_DEV_NICK").unwrap_or_else(|_| "tester".into()));
+        spawn_engine(&app, cfg);
+    }
     slint::run_event_loop_until_quit().expect("event loop");
 }
 
