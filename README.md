@@ -3,68 +3,119 @@
 Serverless, end-to-end encrypted instant messenger for the desktop, in the spirit of ICQ.
 Plain text, docked buddy list, no accounts on anyone's server.
 
-Specs: [docs/PRD.md](docs/PRD.md) · [docs/TECH_STACK.md](docs/TECH_STACK.md)
+Specs: [docs/PRD.md](docs/PRD.md) · [docs/TECH_STACK.md](docs/TECH_STACK.md) · [docs/protocol/PROTOCOL.md](docs/protocol/PROTOCOL.md)
 
-> **Status: prototype.** Works between machines that can reach each other directly
-> (same LAN, or open ports). Not audited — do not rely on it for real secrets yet.
+> **Status: v0.1 alpha.** All P0 and P1 features of the PRD are implemented. The code has not been
+> audited and releases are not code-signed. Do not rely on it for real secrets yet.
+> The protocol may still change incompatibly before 1.0.
 
-## Run
+## Download
+
+Prebuilt archives for Windows x64, Linux x64/arm64 and macOS (universal) are on the
+[releases page](https://github.com/cyberhirsch/RogueIM/releases). Unpack the archive and start
+`rogueim`. Keep the `rim-plugin-*` files next to it if you want the sidebar gadgets.
+
+Linux runtime needs GTK 3, libayatana-appindicator3, libxdo and ALSA (usually preinstalled on desktops).
+
+## Run from source
 
 ```
 cargo run -p rogueim --release                       # profile "default"
 cargo run -p rogueim --release -- --profile alice    # separate identity on the same machine
 ```
 
-First start creates an account (nickname + passphrase). Afterwards the passphrase unlocks it.
-There is no password reset: the state file is encrypted with it.
+First start offers three tabs:
 
-To add someone: **invite** → **copy** → send them the `rim1:…` code; they paste it under **+ add**.
+- **create**: a new account. You get a 24-word recovery key; write it down. It is the only way to
+  restore a backup without the passphrase.
+- **link**: add this computer to an existing account. Shows a `rimlink2:` code plus four check words;
+  paste the code on a device you already use (settings → devices → link) and compare the words.
+- **restore**: a new device from a `.rimb` backup file, using the passphrase or the recovery words.
+
+There is no password reset: the state file is encrypted with the passphrase.
+
+To add someone: **invite** → **copy** → send them the `rim2:…` code; they paste it under **+ add**.
 You accept their authorization request, then you both see each other's status.
+Invites are single-use by default, expire, and carry a small proof of work.
 
-### A test partner without a second machine
+## What works in v0.1
 
-```
-cargo run -p rim-cli -- --dir ./bot --pass botpass --nick echo-bot --invite --accept-all --echo
-```
-
-Prints a single-use invite, accepts every authorization request and echoes messages back.
-
-## What works
-
-| Area | Prototype |
+| Area | |
 |---|---|
-| Identity | Ed25519 account key signs a separate device key (PeerId) and Olm identity; fingerprints |
-| Invites | `rim1:` codes, **single-use** (token + reserved Olm one-time key); reuse is rejected |
-| Authorization | ICQ-style request with message → accept / deny |
-| Encryption | Olm (Double Ratchet, vodozemac) per contact; state at rest: Argon2id → XChaCha20-Poly1305 |
-| Network | libp2p over QUIC + TCP/Noise, mDNS LAN discovery, direct dialing via addresses in invites/presence |
-| Presence | Online, Free for Chat, Away, N/A, Occupied, DND, Invisible; OS + desktop/laptop icon; battery flag |
-| Messages | Plain text, delivery states (queued `[q]` → delivered), local outbox retried until the contact is reachable |
-| History | Stored encrypted, restored on unlock |
-| UI | Slint; buddy list **always docked** (Windows AppBar: reserves the screen strip, maximised windows stay out of it) and always on top; left/right edge; one window per chat; themes: grey (default), graphite, green, amber |
+| Identity | Ed25519 account key; per-device keys; fingerprints and safety numbers; no central ID |
+| Contacts | Single-use or expiring invites, ICQ-style authorization, introductions ("send contact"), folders, visible/invisible lists, ignore |
+| Presence | Online, Free for Chat, Away, N/A, Occupied, DND, Invisible; auto-away/N/A; OS icon with desktop/laptop/**phone** frame per device |
+| Messages | Plain text only. Delivery states, typing, read receipts (opt-in), edit/delete, reply, urgent flag, auto-reply, disappearing messages, search, note to self |
+| Offline delivery | Nostr mailbox (sealed, expiring, deleted after fetch), buddy relays, DHT slots |
+| Groups | Invite, add/remove with key rotation, rename, leave; signed group state |
+| Files | Direct connections only, encrypted, BLAKE3-verified, resumable |
+| Multi-device | Link devices, sync contacts/settings/history/read state, rename, remote lock, revoke (the revoked device wipes its local data) |
+| Backup | Encrypted `.rimb` files (manual or scheduled), restore via passphrase or recovery words, history import |
+| Network | libp2p: QUIC + TCP/Noise, mDNS, Kademlia DHT, AutoNAT, relay v2, hole punching (DCUtR), UPnP, optional helper mode, LAN-only mode |
+| Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), tray, notifications, sounds, global hotkeys, autostart, idle lock |
+| Themes | graphite (default), grey, green, amber |
+| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status |
+| Headless | `rim-cli` as node (relay/DHT/mailbox helper), bot with a local JSON API, one-shot sender |
 
-## Not yet
+## Known limitations of the alpha
 
-Offline delivery when you are *both* not online at the same time (Nostr mailbox), NAT traversal /
-relays, multi-device, backups, groups, file transfer, sounds, plugins, docking on Linux/macOS.
-See the milestones in the PRD.
+- Tested by hand on Windows 10 only. Linux and macOS builds compile in CI, but docking, idle detection
+  and the player plugin have not been exercised there. Wayland docking works through XWayland only.
+- No default relay nodes are shipped. Behind strict NAT, two peers need UPnP, a shared LAN, or a
+  node you run yourself (see below) entered under settings → network → bootstrap. Messages still arrive
+  through the Nostr mailbox when no direct path exists; files do not.
+- The CalDAV mode of the todo plugin has not been tested against a real server yet.
+- Only the three first-party plugins are loaded. Third-party plugins and plugin signing come later.
+- The gadget layout is per device and is not synced.
+- Changing helper/relay mode takes effect after a restart.
+- Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
+- No installers yet: archives only.
+
+## Run a node
+
+A node is an always-on peer that helps your friends reach each other (relay, DHT, store-and-forward).
+
+```
+docker build -f deploy/Dockerfile -t rogueim-node .
+docker run -d --name rim-node -p 4001:4001/tcp -p 4001:4001/udp -v rim-node:/data -e RIM_PASS='change me' rogueim-node
+```
+
+On Debian/Raspberry Pi OS, use the `rogueim-node-*.deb` package from the release. Put `RIM_PASS=…` into
+`/etc/rogueim/node.env`, then run `systemctl enable --now rogueim-node`.
+
+## Bots and scripts
+
+```
+rim-cli --dir ./bot --pass botpass --nick echo-bot --invite --accept-all --echo
+rim-cli --bot --api mybot --allow alice,bob --dir ./bot --pass x --nick backupbot
+rim-cli send --dir ./bot --pass x --to alice "backup finished"
+some-command | rim-cli --dir ./bot --pass x --stdin-to alice
+```
+
+`--api NAME` opens a local socket / named pipe `rogueim-NAME` that speaks JSON lines
+(`{"cmd":"send","to":"alice","text":"hi"}`). It never listens on a network port.
 
 ## Layout
 
 ```
-crates/rim-core   engine: identity, Olm sessions, libp2p swarm, encrypted store
-crates/rim-cli    headless peer (test partner, seed of bot mode)
-app/              Slint desktop app (ui/*.slint, src/dock.rs = AppBar docking)
-docs/             PRD and tech stack
+crates/rim-core         engine: identity, Olm/Megolm, libp2p swarm, Nostr mailbox, encrypted store
+crates/rim-cli          headless peer: node, bot, scripting
+crates/rim-plugin-sdk   plugin protocol (JSON lines over a local socket)
+app/                    Slint desktop app (ui/*.slint, src/dock.rs = docking)
+plugins/                pomodoro, todo, player
+deploy/                 Dockerfile, systemd unit, .deb scripts
+docs/                   PRD, tech stack, protocol spec
 ```
 
 ## Tests
 
 ```
-cargo test -p rim-core
+cargo test -p rim-core -p rim-plugin-pomodoro -p rim-plugin-player
+cargo test -p rim-core -- --ignored     # live tests against public Nostr relays
 ```
 
-Two engines on one machine: invite → authorize → presence → encrypted chat both ways →
-delivery receipts → wrong passphrase rejected → restart with session intact; plus single-use invites.
+The engine tests run pairs of full engines on loopback: invites, authorization, presence, chat, restarts,
+multi-device linking and sync, remote lock, direct files, groups with removal, backup and restore as a
+new device, and introductions. Property tests feed malformed input to every decoder.
 
 License: GPL-3.0-or-later.

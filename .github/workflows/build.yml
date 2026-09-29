@@ -9,6 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  PKGS: -p rogueim -p rim-cli -p rim-plugin-pomodoro -p rim-plugin-todo -p rim-plugin-player
+  BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player
 
 jobs:
   test:
@@ -18,11 +20,13 @@ jobs:
       - name: Linux build deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev libx11-xcb-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+          sudo apt-get install -y pkg-config libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-xcb-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libdbus-1-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p rim-core
+      - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo
+      - run: cargo build -p rogueim -p rim-cli
 
   build:
     name: build (${{ matrix.name }})
@@ -42,8 +46,9 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev \
-            libwayland-dev libx11-xcb-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev
+          sudo apt-get install -y pkg-config libfontconfig1-dev libxkbcommon-dev libxkbcommon-x11-dev \
+            libwayland-dev libx11-xcb-dev libxcursor-dev libxrandr-dev libxi-dev libgl1-mesa-dev \
+            libgtk-3-dev libxdo-dev libayatana-appindicator3-dev libasound2-dev libdbus-1-dev
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -54,15 +59,16 @@ jobs:
 
       - name: Build
         if: runner.os != 'macOS'
-        run: cargo build --release -p rogueim -p rim-cli
+        shell: bash
+        run: cargo build --release $PKGS
 
       - name: Build (macOS universal)
         if: runner.os == 'macOS'
         run: |
-          cargo build --release -p rogueim -p rim-cli --target aarch64-apple-darwin
-          cargo build --release -p rogueim -p rim-cli --target x86_64-apple-darwin
+          cargo build --release $PKGS --target aarch64-apple-darwin
+          cargo build --release $PKGS --target x86_64-apple-darwin
           mkdir -p target/release
-          for b in rogueim rim-cli; do
+          for b in $BINS; do
             lipo -create -output target/release/$b \
               target/aarch64-apple-darwin/release/$b target/x86_64-apple-darwin/release/$b
           done
@@ -73,14 +79,24 @@ jobs:
           d="RogueIM-${{ matrix.name }}"
           mkdir -p "dist/$d"
           ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
-          cp "target/release/rogueim$ext" "target/release/rim-cli$ext" README.md LICENSE "dist/$d/"
+          for b in $BINS; do cp "target/release/$b$ext" "dist/$d/"; done
+          cp README.md LICENSE "dist/$d/"
           cd dist
           if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$d.zip" "$d" > /dev/null; else tar czf "$d.tar.gz" "$d"; fi
+
+      - name: Node .deb
+        if: runner.os == 'Linux'
+        run: |
+          cargo install cargo-deb --locked
+          cargo deb -p rim-cli --no-build --no-strip --output dist/
+          for f in dist/*.deb; do mv "$f" "dist/rogueim-node-${{ matrix.name }}.deb"; done
 
       - uses: actions/upload-artifact@v4
         with:
           name: RogueIM-${{ matrix.name }}
-          path: dist/RogueIM-${{ matrix.name }}.*
+          path: |
+            dist/RogueIM-${{ matrix.name }}.*
+            dist/*.deb
 
   release:
     if: startsWith(github.ref, 'refs/tags/v')
@@ -96,5 +112,6 @@ jobs:
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*
+          name: RogueIM ${{ github.ref_name }}
           prerelease: true
           generate_release_notes: true

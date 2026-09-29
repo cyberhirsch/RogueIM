@@ -260,6 +260,20 @@ impl Engine {
                 for a in &info.listen_addrs {
                     self.swarm.behaviour_mut().kad.add_address(&peer_id, a.clone());
                 }
+                // Remember where a contact's device listens, so introductions and
+                // contact sync can pass it on before its first presence arrives.
+                let pid = peer_id.to_string();
+                let heard: Vec<String> = info.listen_addrs.iter().filter(|a| !is_relayed(a)).map(|a| a.to_string()).collect();
+                for c in self.p.contacts.iter_mut() {
+                    if let Some(d) = c.devices.iter_mut().find(|d| d.entry.peer_id == pid) {
+                        for a in &heard {
+                            if !d.addrs.contains(a) {
+                                d.addrs.push(a.clone());
+                            }
+                        }
+                        d.addrs.truncate(16);
+                    }
+                }
                 // Use bootstrap nodes that offer relaying as our circuit relays.
                 if hop && self.p.net.bootstrap.iter().any(|b| b.contains(&peer_id.to_string())) && !self.p.net.lan_only {
                     if let Some(a) = info.listen_addrs.iter().find(|a| !is_relayed(a) && !a.iter().any(|p| matches!(p, Protocol::Ip4(ip) if ip.is_loopback() || ip.is_private()))) {

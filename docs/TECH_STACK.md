@@ -6,6 +6,32 @@ RogueIM (short: RIM). Serverless, end-to-end encrypted, desktop-first chat in th
 
 ---
 
+## 0. As built in v0.1 (alpha)
+
+The sections below are the target design. The v0.1 alpha deviates from it where a simpler path was
+good enough for now. The wire protocol as implemented is specified in [protocol/PROTOCOL.md](protocol/PROTOCOL.md).
+
+| Area | Target design | v0.1 |
+|---|---|---|
+| Crate layout | rim-proto, rim-crypto, rim-net, rim-nostr, rim-store, rim-plugin-host split out | One `rim-core` crate with modules (`proto`, `identity`, `mailbox`, `store`, `engine/*`); plugin host lives in `app/src/plugins.rs` |
+| Wire format | Protocol Buffers (`prost`) | Versioned JSON (`serde_json`) over libp2p request-response (`/rim/msg/2`, `/rim/file/1`) |
+| libp2p | current release | 0.56 (0.57 conflicts with Slint over `js-sys`) |
+| Local storage | SQLCipher | One state file: Argon2id → XChaCha20-Poly1305 (`RIM1` format), rewritten atomically |
+| Own-device sync | Automerge CRDT | Last-writer-wins per record (contacts, settings, read markers, plugin state) with timestamps |
+| Groups | gossipsub topic + Megolm | Megolm sessions; messages fanned out per member device over the Olm channel; signed group state |
+| Account/device keys | ed25519-dalek | libp2p's Ed25519 identity keys |
+| Renderer | Skia or FemtoVG | Slint software renderer (FemtoVG rendered black on some GPUs); fast enough for a text UI |
+| Plugin IPC | length-prefixed protobuf | JSON lines over a local socket (`interprocess`) |
+| Plugin UI | plugin ships `.slint`, host runs `slint-interpreter` | Plugin sends a list of items (title, text, button, input, check…); the host draws them with its own widgets. No interpreter, no plugin markup |
+| Plugin signing | release-key signatures | Only the three first-party plugin executables next to `rogueim` are loaded; no signatures yet |
+| OS keychain | passphrase "remember me" | Used only by the todo plugin for CalDAV passwords |
+| Wayland | layer-shell backend | XWayland with X11 struts |
+| macOS | objc2 floating panel | winit always-on-top + all workspaces; edge-snapped, no reserved space |
+| Packaging | cargo-packager installers, updater, code signing | zip / tar.gz archives and an arm64/x64 `.deb` for the node, built by GitHub Actions; no updater, unsigned |
+| Tests | nextest, cargo fuzz, Slint testing backend | `cargo test`: engine integration tests on loopback, proptest on all decoders, plugin protocol tests; GUI checked by hand |
+
+---
+
 ## 1. Summary
 
 | Layer | Choice | Why |
