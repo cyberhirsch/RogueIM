@@ -88,6 +88,7 @@ export component MainWindow inherits Window {
 
     // chat docked into the lower half of the bar
     in property <bool> chat-docked;
+    in property <string> dchat-id;
     in property <string> dchat-name;
     in property <string> dchat-status;
     in property <color> dchat-tint;
@@ -98,6 +99,8 @@ export component MainWindow inherits Window {
     in property <bool> dchat-authorized: true;
     in property <[ChatLine]> dchat-lines;
     callback dchat-send(string);
+    // single click on a contact while a chat is docked switches the dock to it
+    callback select-contact(string);
     callback dchat-undock();
     callback dchat-close();
 
@@ -332,7 +335,7 @@ export component MainWindow inherits Window {
                 ListView {
                     for c in root.contacts: Rectangle {
                         height: 38px;
-                        background: row-ta.has-hover ? Theme.hover : transparent;
+                        background: root.chat-docked && c.id == root.dchat-id ? Theme.line : (row-ta.has-hover ? Theme.hover : transparent);
                         HorizontalLayout {
                             padding-left: 6px;
                             padding-right: 6px;
@@ -355,7 +358,8 @@ export component MainWindow inherits Window {
                             }
                         }
                         row-ta := TouchArea {
-                            double-clicked => { root.open-chat(c.id); }
+                            clicked => { root.select-contact(c.id); }
+                        double-clicked => { root.open-chat(c.id); }
                             pointer-event(e) => {
                                 if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
                                     ctx.show();

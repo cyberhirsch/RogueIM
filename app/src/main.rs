@@ -218,6 +218,12 @@ fn dock_chat(app: &Rc<RefCell<App>>, id: &str) {
         if let Some(w) = a.chats.get(id) {
             let _ = w.hide();
         }
+        // Switching the dock closes the previous docked chat.
+        if let (Some(prev), Some(e)) = (a.docked_chat.as_ref(), a.engine.as_ref()) {
+            if prev != id {
+                e.send(Command::CloseChat { id: prev.clone() });
+            }
+        }
         a.docked_chat = Some(id.to_string());
         if let Some(c) = a.contacts.iter().find(|c| c.id == id) {
             update_docked_header(&main, c, a.dark());
@@ -225,6 +231,7 @@ fn dock_chat(app: &Rc<RefCell<App>>, id: &str) {
         (main, a.engine.clone())
     };
     main.set_dchat_lines(ModelRc::new(VecModel::from(Vec::<ChatLine>::new())));
+    main.set_dchat_id(id.into());
     main.set_chat_docked(true);
     if let Some(e) = engine {
         e.send(Command::OpenChat { id: id.to_string() });
@@ -543,6 +550,15 @@ fn main() {
     }
 
     // chat docked in the bar
+    {
+        let app = app.clone();
+        main.on_select_contact(move |id| {
+            let docked = app.borrow().docked_chat.clone();
+            if docked.is_some() && docked.as_deref() != Some(id.as_str()) {
+                dock_chat(&app, &id);
+            }
+        });
+    }
     {
         let app = app.clone();
         main.on_dchat_send(move |t| {
