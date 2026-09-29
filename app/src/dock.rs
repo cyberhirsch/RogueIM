@@ -32,6 +32,13 @@ mod imp {
     };
     use windows_sys::Win32::UI::WindowsAndMessaging::{MONITORINFOF_PRIMARY, WM_USER};
 
+    use std::cell::Cell;
+
+    thread_local! {
+        /// Whether our window is currently registered as an AppBar.
+        static REGISTERED: Cell<bool> = const { Cell::new(false) };
+    }
+
     fn hwnd(w: &slint::Window) -> Option<HWND> {
         match w.window_handle().window_handle().ok()?.as_raw() {
             RawWindowHandle::Win32(h) => Some(h.hwnd.get() as HWND),
@@ -88,8 +95,13 @@ mod imp {
         let width = (width_logical * mon.dpi as f32 / 96.0).round() as i32;
         unsafe {
             let mut abd = data(h, left);
-            SHAppBarMessage(ABM_REMOVE, &mut abd);
-            SHAppBarMessage(ABM_NEW, &mut abd);
+            // Register once. Re-registering (REMOVE + NEW) before every move
+            // races with the shell: QUERYPOS still sees our old strip and
+            // pushes the bar inward by its own width.
+            if !REGISTERED.get() {
+                SHAppBarMessage(ABM_NEW, &mut abd);
+                REGISTERED.set(true);
+            }
             abd.rc = if left {
                 RECT { left: mon.left, top: mon.top, right: mon.left + width, bottom: mon.bottom }
             } else {
@@ -115,6 +127,7 @@ mod imp {
             let mut abd = data(h, false);
             SHAppBarMessage(ABM_REMOVE, &mut abd);
         }
+        REGISTERED.set(false);
     }
 
     pub const SUPPORTED: bool = true;
