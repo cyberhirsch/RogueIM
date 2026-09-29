@@ -94,30 +94,6 @@ mod imp {
         }
     }
 
-    /// Show the bar on every Space (NSWindowCollectionBehaviorCanJoinAllSpaces
-    /// | Stationary); winit has no API for it.
-    #[cfg(target_os = "macos")]
-    fn mac_all_spaces(w: &slint::Window) {
-        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-        use std::ffi::c_void;
-        #[link(name = "objc")]
-        unsafe extern "C" {
-            fn objc_msgSend();
-            fn sel_registerName(name: *const std::ffi::c_char) -> *const c_void;
-        }
-        let wh = w.window_handle();
-        let Ok(h) = wh.window_handle() else { return };
-        let RawWindowHandle::AppKit(a) = h.as_raw() else { return };
-        unsafe {
-            let get: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
-            let set: extern "C" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(objc_msgSend as *const ());
-            let win = get(a.ns_view.as_ptr(), sel_registerName(c"window".as_ptr()));
-            if !win.is_null() {
-                set(win, sel_registerName(c"setCollectionBehavior:".as_ptr()), 1 | (1 << 4));
-            }
-        }
-    }
-
     pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
         let Some(h) = hwnd(w) else { return false };
         let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
@@ -234,6 +210,30 @@ mod imp {
             &[l as u32, r as u32, 0, 0, ly0 as u32, ly1 as u32, ry0 as u32, ry1 as u32, 0, 0, 0, 0],
         );
         let _ = conn.flush();
+    }
+
+    /// Show the bar on every Space (NSWindowCollectionBehaviorCanJoinAllSpaces
+    /// | Stationary); winit has no API for it.
+    #[cfg(target_os = "macos")]
+    fn mac_all_spaces(w: &slint::Window) {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use std::ffi::c_void;
+        #[link(name = "objc")]
+        unsafe extern "C" {
+            fn objc_msgSend();
+            fn sel_registerName(name: *const std::ffi::c_char) -> *const c_void;
+        }
+        let wh = w.window_handle();
+        let Ok(h) = wh.window_handle() else { return };
+        let RawWindowHandle::AppKit(a) = h.as_raw() else { return };
+        unsafe {
+            let get: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
+            let set: extern "C" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(objc_msgSend as *const ());
+            let win = get(a.ns_view.as_ptr(), sel_registerName(c"window".as_ptr()));
+            if !win.is_null() {
+                set(win, sel_registerName(c"setCollectionBehavior:".as_ptr()), 1 | (1 << 4));
+            }
+        }
     }
 
     pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
