@@ -12,6 +12,7 @@ use chacha20poly1305::{XChaCha20Poly1305, XNonce};
 const MAGIC: &[u8; 4] = b"RIM1";
 
 pub struct Store {
+    dir: PathBuf,
     path: PathBuf,
     salt: [u8; 16],
     key: [u8; 32],
@@ -44,7 +45,7 @@ impl Store {
     pub fn create(dir: &Path, pass: &str) -> Result<Self> {
         std::fs::create_dir_all(dir)?;
         let salt: [u8; 16] = rand::random();
-        Ok(Self { path: Self::path_in(dir), key: derive(pass, &salt)?, salt })
+        Ok(Self { dir: dir.to_path_buf(), path: Self::path_in(dir), key: derive(pass, &salt)?, salt })
     }
 
     /// Open and decrypt an existing store.
@@ -61,7 +62,11 @@ impl Store {
         let plain = cipher
             .decrypt(&nonce, &data[44..])
             .map_err(|_| anyhow!("wrong passphrase or damaged file"))?;
-        Ok((Self { path, salt, key }, plain))
+        Ok((Self { dir: dir.to_path_buf(), path, salt, key }, plain))
+    }
+
+    pub fn dir(&self) -> PathBuf {
+        self.dir.clone()
     }
 
     /// Encrypt and write atomically (write temp, then rename).

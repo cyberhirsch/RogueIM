@@ -7,10 +7,15 @@ edition = "2024"
 anyhow = "1.0.104"
 argon2 = "0.6.0"
 base64 = "0.23.1"
+bip39 = "3.0.0"
+blake3 = "1.8.7"
 chacha20poly1305 = "0.11.0"
+directories = "6"
 futures = "0.3.34"
 hex = "0.4.3"
-libp2p = { version = "0.56", features = ["tokio", "tcp", "quic", "noise", "yamux", "mdns", "request-response", "json", "macros", "identify", "ed25519"] }
+hkdf = "0.13.0"
+libp2p = { version = "0.56", features = ["tokio", "tcp", "quic", "noise", "yamux", "mdns", "request-response", "json", "macros", "identify", "ed25519", "kad", "relay", "dcutr", "autonat", "upnp", "ping", "dns"] }
+nostr-sdk = "0.45"
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
@@ -23,3 +28,6 @@ vodozemac = "0.11"
 
 [target."cfg(windows)".dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_Power"] }
+
+[dev-dependencies]
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
