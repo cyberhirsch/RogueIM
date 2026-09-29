@@ -59,10 +59,9 @@ export component MainWindow inherits Window {
     in property <string> invite;
     in property <string> notice;
     in property <bool> docked;
-    in property <string> edge: "right";
     in property <string> theme-name;
-    in property <int> monitor-count: 1;
-    in property <string> monitor-label: "M1";
+    in property <bool> can-move-left;
+    in property <bool> can-move-right;
     // 0 = none, 1 = add contact, 2 = invite
     in-out property <int> panel: 0;
 
@@ -75,9 +74,9 @@ export component MainWindow inherits Window {
     callback deny(string);
     callback open-chat(string);
     callback remove-contact(string);
-    callback switch-edge();
     callback next-theme();
-    callback next-monitor();
+    // -1 = one docking position to the left, +1 = to the right
+    callback move-dock(int);
     callback quit();
 
     // ---------- login ----------
@@ -169,8 +168,8 @@ export component MainWindow inherits Window {
             RButton { text: "invite"; clicked => { root.new-invite(); } }
             Rectangle { }
             RButton { text: "theme"; tone: Theme.dim; clicked => { root.next-theme(); } }
-            RButton { text: root.edge == "right" ? "<|" : "|>"; tone: Theme.dim; clicked => { root.switch-edge(); } }
-            if root.monitor-count > 1: RButton { text: root.monitor-label; tone: Theme.dim; clicked => { root.next-monitor(); } }
+            RButton { text: "<"; tone: Theme.dim; enabled: root.can-move-left; clicked => { root.move-dock(-1); } }
+            RButton { text: ">"; tone: Theme.dim; enabled: root.can-move-right; clicked => { root.move-dock(1); } }
             RButton { text: "x"; tone: Theme.red; clicked => { root.quit(); } }
         }
 

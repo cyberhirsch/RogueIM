@@ -249,6 +249,13 @@ fn refresh_contacts(app: &Rc<RefCell<App>>, main: &MainWindow) {
     }
 }
 
+/// Docking positions run left to right across the desktop: monitor 1 left,
+/// monitor 1 right, monitor 2 left, ... (monitors are sorted by x).
+fn position_index(all: &[dock::Monitor], id: &str, left: bool) -> usize {
+    let m = all.iter().position(|m| m.id == id).unwrap_or(0);
+    m * 2 + if left { 0 } else { 1 }
+}
+
 /// Dock on the preferred monitor (or the primary) at the chosen edge.
 /// Applied twice: moving to a monitor with a different DPI makes the window
 /// system rescale it, so the second pass pins the final size.
@@ -258,10 +265,10 @@ fn redock(app: &Rc<RefCell<App>>, main: &MainWindow) {
         (a.settings.dock_left, a.settings.monitor.clone())
     };
     let all = dock::monitors();
-    main.set_monitor_count(all.len() as i32);
     let Some(mon) = dock::pick(&pref) else { return };
-    let idx = all.iter().position(|m| m.id == mon.id).map(|i| i + 1).unwrap_or(1);
-    main.set_monitor_label(format!("M{idx}").into());
+    let pos = position_index(&all, &mon.id, left);
+    main.set_can_move_left(pos > 0);
+    main.set_can_move_right(pos + 1 < all.len() * 2);
     app.borrow_mut().layout = all;
     dock::dock(main.window(), DOCK_WIDTH, left, &mon);
     let weak = main.as_weak();
@@ -390,7 +397,6 @@ fn main() {
     let main = MainWindow::new().expect("main window");
     apply_theme(&main.global::<Theme>(), palette(&settings.theme));
     main.set_theme_name(settings.theme.clone().into());
-    main.set_edge(if settings.dock_left { "left".into() } else { "right".into() });
     main.set_docked(dock::SUPPORTED);
     main.set_profile(profile.clone().into());
     main.set_new_account(!Store::exists(&dir));
@@ -514,32 +520,19 @@ fn main() {
     {
         let app = app.clone();
         let weak = main.as_weak();
-        main.on_switch_edge(move || {
-            let main = weak.unwrap();
-            let left = {
-                let mut a = app.borrow_mut();
-                a.settings.dock_left = !a.settings.dock_left;
-                save_settings(&a.dir, &a.settings);
-                a.settings.dock_left
-            };
-            main.set_edge(if left { "left".into() } else { "right".into() });
-            redock(&app, &main);
-        });
-    }
-    {
-        let app = app.clone();
-        let weak = main.as_weak();
-        main.on_next_monitor(move || {
+        main.on_move_dock(move |dir| {
             let main = weak.unwrap();
             let all = dock::monitors();
-            if all.len() < 2 {
+            if all.is_empty() {
                 return;
             }
             {
                 let mut a = app.borrow_mut();
                 let cur = dock::pick(&a.settings.monitor).map(|m| m.id).unwrap_or_default();
-                let i = all.iter().position(|m| m.id == cur).unwrap_or(0);
-                a.settings.monitor = all[(i + 1) % all.len()].id.clone();
+                let pos = position_index(&all, &cur, a.settings.dock_left) as i32;
+                let next = (pos + dir).clamp(0, all.len() as i32 * 2 - 1) as usize;
+                a.settings.monitor = all[next / 2].id.clone();
+                a.settings.dock_left = next % 2 == 0;
                 save_settings(&a.dir, &a.settings);
             }
             redock(&app, &main);
