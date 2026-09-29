@@ -94,6 +94,30 @@ mod imp {
         }
     }
 
+    /// Show the bar on every Space (NSWindowCollectionBehaviorCanJoinAllSpaces
+    /// | Stationary); winit has no API for it.
+    #[cfg(target_os = "macos")]
+    fn mac_all_spaces(w: &slint::Window) {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        use std::ffi::c_void;
+        #[link(name = "objc")]
+        unsafe extern "C" {
+            fn objc_msgSend();
+            fn sel_registerName(name: *const std::ffi::c_char) -> *const c_void;
+        }
+        let wh = w.window_handle();
+        let Ok(h) = wh.window_handle() else { return };
+        let RawWindowHandle::AppKit(a) = h.as_raw() else { return };
+        unsafe {
+            let get: extern "C" fn(*mut c_void, *const c_void) -> *mut c_void = std::mem::transmute(objc_msgSend as *const ());
+            let set: extern "C" fn(*mut c_void, *const c_void, usize) = std::mem::transmute(objc_msgSend as *const ());
+            let win = get(a.ns_view.as_ptr(), sel_registerName(c"window".as_ptr()));
+            if !win.is_null() {
+                set(win, sel_registerName(c"setCollectionBehavior:".as_ptr()), 1 | (1 << 4));
+            }
+        }
+    }
+
     pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
         let Some(h) = hwnd(w) else { return false };
         let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
@@ -185,7 +209,8 @@ mod imp {
         use x11rb::connection::Connection;
         use x11rb::protocol::xproto::{AtomEnum, ConnectionExt, PropMode};
         use x11rb::wrapper::ConnectionExt as _;
-        let Ok(h) = w.window_handle().window_handle() else { return };
+        let wh = w.window_handle();
+        let Ok(h) = wh.window_handle() else { return };
         let win: u32 = match h.as_raw() {
             RawWindowHandle::Xlib(x) => x.window as u32,
             RawWindowHandle::Xcb(x) => x.window.get(),
@@ -215,7 +240,8 @@ mod imp {
         let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
         let x = if left { mon.left } else { mon.right - width };
         super::place(w, x, mon.top, width as u32, (mon.bottom - mon.top) as u32);
-        let _ = w.with_winit_window(|ww| ww.set_visible_on_all_workspaces(true));
+        #[cfg(target_os = "macos")]
+        mac_all_spaces(w);
         #[cfg(target_os = "linux")]
         x11_strut(w, left, width, mon, reserve);
         let _ = reserve;
