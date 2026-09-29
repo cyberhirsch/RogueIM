@@ -212,10 +212,6 @@ impl ContactRec {
         }
     }
 
-    pub fn addrs(&self) -> Vec<(String, Vec<String>)> {
-        self.devices.iter().filter(|d| !d.addrs.is_empty()).map(|d| (d.entry.peer_id.clone(), d.addrs.clone())).collect()
-    }
-
     pub fn set_addrs(&mut self, addrs: &[(String, Vec<String>)]) {
         for (peer, a) in addrs {
             if let Some(d) = self.devices.iter_mut().find(|d| &d.entry.peer_id == peer) {
