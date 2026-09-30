@@ -35,6 +35,7 @@ pub(crate) struct CallRec {
     pub seq: u32,
     pub last_heard: i64,
     pub to_app: Option<std::sync::mpsc::Sender<(u32, Vec<u8>)>>,
+    pub screen: super::screen::ScreenState,
 }
 
 /// The audio path between engine and app while a call is active.
@@ -85,6 +86,8 @@ impl Engine {
             reason: c.reason.clone(),
             since: c.started,
             direct,
+            screen_out: c.screen.out,
+            screen_in: c.screen.incoming,
         })
     }
 
@@ -97,6 +100,10 @@ impl Engine {
     /// Devices of a contact we are connected to right now.
     fn connected_targets(&self, contact: &str) -> Vec<Target> {
         self.targets(contact).into_iter().filter(|t| self.is_connected_peer(&t.entry.peer_id)).collect()
+    }
+
+    pub(crate) fn call_to_device(&mut self, contact: &str, device: Option<&str>, sig: CallSignal) {
+        self.call_to(contact, device, sig);
     }
 
     fn call_to(&mut self, contact: &str, device: Option<&str>, sig: CallSignal) {
@@ -126,7 +133,7 @@ impl Engine {
         }
         let key: [u8; 32] = rand::random();
         let id = hex::encode(rand::random::<[u8; 8]>());
-        self.call = Some(CallRec { id: id.clone(), contact: contact.to_string(), device: None, key, outgoing: true, state: CallState::Calling, reason: String::new(), started: now(), seq: 0, last_heard: now(), to_app: None });
+        self.call = Some(CallRec { id: id.clone(), contact: contact.to_string(), device: None, key, outgoing: true, state: CallState::Calling, reason: String::new(), started: now(), seq: 0, last_heard: now(), to_app: None, screen: Default::default() });
         self.call_to(contact, None, CallSignal::Invite { call: id, key: b64(&key) });
         self.emit_call();
         Ok(())
@@ -174,8 +181,10 @@ impl Engine {
             c.state = CallState::Ended;
             c.reason = reason.to_string();
             c.to_app = None;
+            c.screen = Default::default();
         }
         self.call_out = None;
+        self.screen_out = None;
         self.emit_call();
     }
 
@@ -204,7 +213,7 @@ impl Engine {
                     return;
                 }
                 let Some(key) = unb64(&key).ok().and_then(|k| <[u8; 32]>::try_from(k).ok()) else { return };
-                self.call = Some(CallRec { id: call, contact: contact.to_string(), device: Some(device.to_string()), key, outgoing: false, state: CallState::Ringing, reason: String::new(), started: now(), seq: 0, last_heard: now(), to_app: None });
+                self.call = Some(CallRec { id: call, contact: contact.to_string(), device: Some(device.to_string()), key, outgoing: false, state: CallState::Ringing, reason: String::new(), started: now(), seq: 0, last_heard: now(), to_app: None, screen: Default::default() });
                 self.emit_call();
             }
             CallSignal::Accept { call } => {
@@ -234,6 +243,7 @@ impl Engine {
                 self.end_call(reason);
             }
             CallSignal::Answered { .. } => {}
+            sig @ (CallSignal::ScreenOn { .. } | CallSignal::ScreenOff { .. } | CallSignal::ScreenKey { .. }) => self.on_screen_signal(device, sig),
         }
     }
 

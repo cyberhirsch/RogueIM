@@ -8,6 +8,7 @@ interprocess = "2"
 rim-core = { version = "0.1.0", path = "../rim-core" }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [package.metadata.deb]
 name = "rogueim-node"

@@ -60,6 +60,10 @@ struct Opts {
 }
 
 fn main() {
+    // RUST_LOG=... turns on engine and network logging (to stderr).
+    if std::env::var_os("RUST_LOG").is_some() {
+        let _ = tracing_subscriber::fmt().with_env_filter(tracing_subscriber::EnvFilter::from_default_env()).with_writer(std::io::stderr).try_init();
+    }
     let mut cfg = EngineConfig { dir: PathBuf::from("./rim-cli-profile"), passphrase: "rim".into(), ..Default::default() };
     let mut o = Opts { invite: false, accept_all: false, answer_calls: false, echo: false, add: None, say: None, control: None, api: None, allow: vec![], stdin_to: None, send_to: None, send_text: None };
     let mut args: Vec<String> = std::env::args().skip(1).collect();
@@ -125,6 +129,7 @@ fn main() {
 
     let (h, rx) = spawn(cfg);
     let contacts: Contacts = Arc::new(Mutex::new(vec![]));
+    let screen_echo: Arc<Mutex<Option<std::sync::mpsc::Receiver<rim_core::engine::ScreenFrame>>>> = Arc::new(Mutex::new(None));
     let clients: Clients = Arc::new(Mutex::new(vec![]));
     if let Some(name) = &o.api {
         start_api(name, h.clone(), contacts.clone(), clients.clone());
@@ -193,6 +198,41 @@ fn main() {
                 println!("call with {}: {:?} {}", v.name, v.state, v.reason);
                 if o.answer_calls && v.state == rim_core::CallState::Ringing {
                     h.send(Command::CallAccept);
+                }
+            }
+            // Screen echo: share back whatever the caller shares.
+            Event::ScreenIn(pipe) if o.answer_calls => {
+                if let Some(rx) = pipe.recv.lock().unwrap().take() {
+                    *screen_echo.lock().unwrap() = Some(rx);
+                    h.send(Command::ScreenShare(true));
+                }
+            }
+            Event::ScreenOut(pipe) if o.answer_calls => {
+                if let (Some(rx), Some(tx)) = (screen_echo.lock().unwrap().take(), pipe.send.clone()) {
+                    let (want, h2) = (pipe.want_key.clone(), h.clone());
+                    std::thread::spawn(move || {
+                        let mut n = 0u64;
+                        loop {
+                            // The caller's viewer wants a keyframe: ask the caller's sender.
+                            if want.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                                h2.send(Command::ScreenWantKey);
+                            }
+                            match rx.recv_timeout(Duration::from_millis(200)) {
+                                Ok(f) => {
+                                    if tx.send(f).is_err() {
+                                        break;
+                                    }
+                                    n += 1;
+                                    if n % 40 == 0 {
+                                        println!("echoed {n} screen frames");
+                                    }
+                                }
+                                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+                                Err(_) => break,
+                            }
+                        }
+                        println!("screen echo ended after {n} frames");
+                    });
                 }
             }
             // Echo test: every audio frame goes straight back to the caller.

@@ -149,7 +149,7 @@ impl Engine {
     /// router and waits for the incoming connection.
     pub fn punch(&mut self, peer: &str, addrs: &[String], round: u8) {
         let Ok(pid) = peer.parse::<PeerId>() else { return };
-        if self.swarm.is_connected(&pid) || round >= PUNCH_ROUNDS {
+        if self.files_rt.direct.contains(&pid) || round >= PUNCH_ROUNDS {
             return;
         }
         let targets: Vec<Multiaddr> = addrs.iter().filter_map(|a| a.parse::<Multiaddr>().ok()).filter(|a| is_quic(a) && is_public(a)).collect();

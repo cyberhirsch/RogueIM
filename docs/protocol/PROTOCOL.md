@@ -227,3 +227,24 @@ JSON lines over a local socket named in `RIM_PLUGIN_SOCKET`; see `crates/rim-plu
 * Calls need a connection to the device; the UI shows whether it is direct or relayed. A call ends 15 s after the
   peer's connection is lost.
 
+## 14. Screen sharing (inside a 1:1 call)
+
+* `CallSignal::ScreenOn{call}` / `ScreenOff{call}` start and stop, `ScreenKey{call}` asks the sender for a keyframe.
+  Only the device in the call may share, and only over a direct connection.
+* Video: H.264 (OpenH264, screen-content mode), up to 1920 px wide, about 8 frames per second, a keyframe at least
+  every 10 s. Each encoded frame is split into parts of at most 192 KiB and sent on `/rim/screen/1` as
+  `ScreenReq{call, seq, part, parts, key, data}`, `data = base64(nonce24 || XChaCha20-Poly1305(call key, part))` with
+  `"rim-screen|call|seq|part|parts|key"` as associated data.
+* The viewer reassembles frames, starts at the first keyframe, hands frames to the decoder in order, jumps ahead at
+  a newer keyframe, and asks for a keyframe when more than 12 frames are stuck behind a gap. The sender stops
+  capturing while more than 8 parts are unacknowledged.
+
+## 15. Connections and session repair
+
+* Only a direct (non-relayed) connection counts as "connected". Relayed connections through public helpers are
+  limited and carry none of RIM's protocols; they only let libp2p punch a direct path (DCUtR).
+* If a known device's regular (non-pre-key) message cannot be decrypted, the sessions with that device are out of
+  step (typically after a crash). The receiver drops its sessions for that device, at most once a minute, and sends
+  it a message on a fresh outbound session (a pre-key message); the peer adopts that session. State is also saved
+  every 30 s so that ratchets advanced by presence are not lost on a crash.
+

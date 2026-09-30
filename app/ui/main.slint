@@ -3,6 +3,7 @@ import { Theme, RButton, RInput, OsIcon, RCheck, RTab, RCaption, RArea, RMenuIte
 import { ChatPane, ChatLine, TButton } from "chat.slint";
 import { LoginScreen } from "login.slint";
 export { ChatWindow, ChatLine } from "chat.slint";
+export { ScreenWindow } from "screen.slint";
 export { Theme } from "theme.slint";
 
 export struct ContactRow {
@@ -189,6 +190,13 @@ export component MainWindow inherits Window {
     in property <string> call-state;
     in property <string> call-text;
     in property <bool> call-muted;
+    in property <bool> call-screen-out;
+    in property <bool> call-screen-in;
+    in property <bool> call-viewer-open;
+    // "" with one monitor, else e.g. "screen 1/2"
+    // number of screens that can be shared, and the chosen one (0-based)
+    in property <int> call-monitors;
+    in property <int> call-monitor;
     in property <string> dchat-call-state;
 
     // contact details
@@ -316,6 +324,9 @@ export component MainWindow inherits Window {
     callback call-decline();
     callback call-hangup();
     callback call-mute();
+    callback call-share();
+    callback call-view();
+    callback call-monitor-pick(int);
     callback dchat-call-toggle();
     callback sound-toggle(int, bool);
     callback sound-cycle(int, int);
@@ -1147,6 +1158,7 @@ export component MainWindow inherits Window {
                 padding: 4px;
                 spacing: 3px;
                 Text { text: root.call-text; color: Theme.accent; font-size: Theme.small; font-weight: 700; wrap: word-wrap; }
+                if root.call-screen-out: Text { text: "you are sharing your screen"; color: Theme.red; font-size: Theme.small; font-weight: 700; }
                 HorizontalLayout {
                     spacing: 4px;
                     alignment: start;
@@ -1154,6 +1166,16 @@ export component MainWindow inherits Window {
                     if root.call-state == "ringing": RButton { text: "decline"; tone: Theme.red; clicked => { root.call-decline(); } }
                     if root.call-state == "active": RButton { text: root.call-muted ? "unmute" : "mute"; tip: "microphone on / off"; clicked => { root.call-mute(); } }
                     if root.call-state == "active" || root.call-state == "calling": RButton { text: "hang up"; tone: Theme.red; clicked => { root.call-hangup(); } }
+                }
+                if root.call-state == "active": HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    RButton { text: root.call-screen-out ? "stop sharing" : "share screen"; tone: root.call-screen-out ? Theme.red : Theme.fg; tip: root.call-screen-out ? "stop showing your screen" : "show your screen (view only; needs a direct connection)"; clicked => { root.call-share(); } }
+                    if root.call-monitors > 1: HorizontalLayout {
+                        spacing: 1px;
+                        for i in root.call-monitors: RTab { text: i + 1; width: 24px; active: i == root.call-monitor; clicked => { root.call-monitor-pick(i); } }
+                    }
+                    if root.call-state == "active" && root.call-screen-in && !root.call-viewer-open: RButton { text: "view screen"; clicked => { root.call-view(); } }
                 }
             }
         }

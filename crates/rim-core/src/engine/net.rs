@@ -19,6 +19,7 @@ use crate::proto::*;
 pub const MSG_PROTOCOL: &str = "/rim/msg/2";
 pub const FILE_PROTOCOL: &str = "/rim/file/1";
 pub const VOICE_PROTOCOL: &str = "/rim/voice/1";
+pub const SCREEN_PROTOCOL: &str = "/rim/screen/1";
 pub const KAD_PROTOCOL: &str = "/rim/kad/1.0.0";
 
 #[derive(NetworkBehaviour)]
@@ -26,6 +27,7 @@ pub struct Behaviour {
     pub rr: request_response::json::Behaviour<WireReq, WireResp>,
     pub file: request_response::json::Behaviour<ChunkReq, ChunkResp>,
     pub voice: request_response::json::Behaviour<VoiceReq, VoiceResp>,
+    pub screen: request_response::json::Behaviour<ScreenReq, ScreenResp>,
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
@@ -68,6 +70,10 @@ pub fn build_swarm(device: Keypair, opts: NetOpts) -> Result<Swarm<Behaviour>> {
                 [(StreamProtocol::new(VOICE_PROTOCOL), ProtocolSupport::Full)],
                 request_response::Config::default().with_request_timeout(Duration::from_secs(4)).with_max_concurrent_streams(512),
             );
+            let screen = request_response::json::Behaviour::new(
+                [(StreamProtocol::new(SCREEN_PROTOCOL), ProtocolSupport::Full)],
+                request_response::Config::default().with_request_timeout(Duration::from_secs(10)).with_max_concurrent_streams(64),
+            );
             let mdns = if opts.mdns { Some(mdns::tokio::Behaviour::new(mdns::Config::default(), peer)?) } else { None };
             let mut kcfg = kad::Config::new(StreamProtocol::new(KAD_PROTOCOL));
             kcfg.set_record_ttl(Some(Duration::from_secs(3 * 24 * 3600)));
@@ -77,6 +83,7 @@ pub fn build_swarm(device: Keypair, opts: NetOpts) -> Result<Swarm<Behaviour>> {
                 rr,
                 file,
                 voice,
+                screen,
                 mdns: mdns.into(),
                 identify: identify::Behaviour::new(identify::Config::new("/rim/id/2".into(), key.public()).with_agent_version(format!("rogueim/{}", env!("CARGO_PKG_VERSION")))),
                 ping: ping::Behaviour::new(ping::Config::new()),
@@ -144,8 +151,14 @@ impl Engine {
         }
     }
 
+    /// Dial a peer even if a relayed connection to it exists.
+    pub fn dial_direct(&mut self, peer: PeerId) {
+        let _ = self.swarm.dial(libp2p::swarm::dial_opts::DialOpts::peer_id(peer).condition(libp2p::swarm::dial_opts::PeerCondition::NotDialing).build());
+    }
+
+    /// A direct connection exists (a relayed one does not count).
     pub fn is_connected_peer(&self, peer: &str) -> bool {
-        peer.parse::<PeerId>().map(|p| self.swarm.is_connected(&p)).unwrap_or(false)
+        peer.parse::<PeerId>().map(|p| self.files_rt.direct.contains(&p)).unwrap_or(false)
     }
 
     fn helpers(&self) -> Vec<String> {
@@ -208,7 +221,8 @@ impl Engine {
                 continue;
             }
             if let Ok(pid) = p.parse::<PeerId>() {
-                let _ = self.swarm.dial(pid);
+                // Also while only a relayed connection exists.
+                let _ = self.swarm.dial(libp2p::swarm::dial_opts::DialOpts::peer_id(pid).condition(libp2p::swarm::dial_opts::PeerCondition::NotDialing).build());
             }
         }
         // Stay connected to at least one public helper: that keeps our router's
@@ -280,31 +294,29 @@ impl Engine {
             SwarmEvent::ConnectionEstablished { peer_id, .. } if self.no_direct && self.owner_of_peer(&peer_id.to_string()).is_some() => {
                 let _ = self.swarm.disconnect_peer_id(peer_id);
             }
-            SwarmEvent::ConnectionEstablished { peer_id, endpoint, .. } => {
+            SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, .. } => {
                 let addr = match &endpoint {
                     ConnectedPoint::Dialer { address, .. } => address.clone(),
                     ConnectedPoint::Listener { send_back_addr, .. } => send_back_addr.clone(),
                 };
-                self.files_rt.connection_up(peer_id, !is_relayed(&addr));
+                // Only a direct connection counts: our protocols do not run over the
+                // limited, relayed ones (those only serve to punch a direct path).
+                let first_direct = self.files_rt.connection_up(peer_id, connection_id, !is_relayed(&addr));
                 let p = peer_id.to_string();
-                if self.owner_of_peer(&p).is_some() {
+                if first_direct && self.owner_of_peer(&p).is_some() {
                     self.send_presence_to_peer(&p);
                     self.flush_outbox_for_device(&p);
                     self.ask_held(&p);
                     self.group_catch_up(&p);
                 }
             }
-            SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } => {
-                self.files_rt.connection_down(peer_id);
-                if self.presence.remove(&peer_id.to_string()).is_some() {
+            SwarmEvent::ConnectionClosed { peer_id, connection_id, .. } => {
+                let lost = self.files_rt.connection_down(peer_id, connection_id);
+                if lost && self.presence.get(&peer_id.to_string()).map(|r| r.ttl == super::PRESENCE_TTL).unwrap_or(false) {
+                    self.presence.remove(&peer_id.to_string());
                     self.emit_contacts();
                     self.emit_devices();
                 }
-            }
-            SwarmEvent::ConnectionClosed { peer_id, .. } => {
-                // Another connection remains; the direct flag may have changed.
-                self.files_rt.connection_down(peer_id);
-                self.files_rt.connection_up(peer_id, true);
             }
             SwarmEvent::Behaviour(BehaviourEvent::Mdns(mdns::Event::Discovered(list))) => {
                 let mut seen = HashSet::new();
@@ -316,8 +328,8 @@ impl Engine {
                     }
                 }
                 for peer in seen {
-                    if !self.swarm.is_connected(&peer) {
-                        let _ = self.swarm.dial(peer);
+                    if !self.files_rt.direct.contains(&peer) {
+                        self.dial_direct(peer);
                     }
                 }
             }
@@ -325,6 +337,7 @@ impl Engine {
             SwarmEvent::Behaviour(BehaviourEvent::Rr(ev)) => self.on_rr(ev),
             SwarmEvent::Behaviour(BehaviourEvent::File(ev)) => self.on_file_rr(ev),
             SwarmEvent::Behaviour(BehaviourEvent::Voice(ev)) => self.on_voice_rr(ev),
+            SwarmEvent::Behaviour(BehaviourEvent::Screen(ev)) => self.on_screen_rr(ev),
             SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
                 let hop = info.protocols.iter().any(|p| p.as_ref() == "/libp2p/circuit/relay/0.2.0/hop");
                 // How the internet sees us, as reported by a public node over QUIC

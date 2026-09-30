@@ -4,7 +4,9 @@
 
 mod account;
 mod call;
+mod screen;
 pub use call::MediaPipe;
+pub use screen::{ScreenFrame, ScreenPipe};
 mod files;
 mod groups;
 mod mail;
@@ -137,6 +139,10 @@ pub enum Command {
     CallAccept,
     CallDecline,
     CallHangup,
+    /// Share our screen in the current call (true) or stop (false).
+    ScreenShare(bool),
+    /// The viewer needs a keyframe.
+    ScreenWantKey,
     // messaging
     SendText { id: String, body: String, reply_to: Option<u64>, urgent: bool },
     EditText { id: String, msg: u64, body: String },
@@ -223,6 +229,10 @@ pub enum Event {
     Call(CallView),
     /// A call became active: the audio path for the app.
     CallMedia(std::sync::Arc<call::MediaPipe>),
+    /// We started sharing: where the app puts encoded frames.
+    ScreenOut(std::sync::Arc<screen::ScreenPipe>),
+    /// They started sharing: where the app gets frames to show.
+    ScreenIn(std::sync::Arc<screen::ScreenPipe>),
     /// Another of our devices asked this one to lock.
     Locked,
     /// This device was wiped (remotely or by the user); the profile is gone.
@@ -330,9 +340,12 @@ pub(crate) struct Engine {
     pub last_signal_presence: i64,
     /// When we last asked a device to hole-punch.
     pub punched: HashMap<String, i64>,
+    /// When we last reset the sessions with a device (by curve key).
+    pub unwedged: HashMap<String, i64>,
     pub call: Option<call::CallRec>,
     /// Encoded frames from the app while a call is active.
     pub call_out: Option<mpsc::UnboundedReceiver<Vec<u8>>>,
+    pub screen_out: Option<mpsc::UnboundedReceiver<screen::ScreenFrame>>,
     pub internal_tx: mpsc::UnboundedSender<Internal>,
     pub relay_status: Vec<(String, bool)>,
     pub nat: String,
@@ -389,7 +402,16 @@ impl Engine {
     }
 
     pub fn my_addrs(&self) -> Vec<String> {
-        let mut v: Vec<String> = self.external.iter().chain(self.observed.iter()).chain(self.listen.iter()).map(|a| a.to_string()).collect();
+        // Direct routes first, relay circuits last.
+        let relayed = |a: &&Multiaddr| net::is_relayed(a);
+        let mut v: Vec<String> = self
+            .listen
+            .iter()
+            .chain(self.observed.iter())
+            .chain(self.external.iter().filter(|a| !relayed(a)))
+            .chain(self.external.iter().filter(relayed))
+            .map(|a| a.to_string())
+            .collect();
         v.dedup();
         v
     }
@@ -436,6 +458,15 @@ async fn run(cfg: EngineConfig, mut rx: mpsc::UnboundedReceiver<Command>, ev: st
             } => match frame {
                 Some(f) => e.call_send_frame(f),
                 None => e.call_out = None,
+            },
+            shot = async {
+                match e.screen_out.as_mut() {
+                    Some(rx) => rx.recv().await,
+                    None => std::future::pending().await,
+                }
+            } => match shot {
+                Some(f) => e.screen_send_frame(f),
+                None => e.screen_stop_local(),
             },
             _ = tick.tick() => e.heartbeat(),
             _ = fast.tick() => e.files_tick(),
@@ -512,6 +543,12 @@ impl Engine {
 
     fn heartbeat(&mut self) {
         let now = crate::identity::now();
+        // Presence and typing advance the ratchets without saving; persist them
+        // regularly so a crash cannot leave us with keys the other side has
+        // already seen used (which would break the sessions).
+        if now % 30 < 10 {
+            self.save();
+        }
         self.net_heartbeat();
         self.mail_heartbeat(now);
         self.expire_disappearing(now);
@@ -645,6 +682,8 @@ impl Engine {
             Command::CallAccept => self.call_accept()?,
             Command::CallDecline => self.call_decline(),
             Command::CallHangup => self.call_hangup(),
+            Command::ScreenShare(on) => self.screen_share(on)?,
+            Command::ScreenWantKey => self.screen_want_key(),
             Command::SetBandwidth(k) => {
                 self.p.net.bandwidth_kbps = k;
                 self.save();

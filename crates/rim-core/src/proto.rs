@@ -393,7 +393,26 @@ pub enum CallSignal {
     Hangup { call: String },
     /// To our own devices: this call was answered or declined elsewhere.
     Answered { call: String },
+    /// Screen sharing inside the call starts / stops.
+    ScreenOn { call: String },
+    ScreenOff { call: String },
+    /// The viewer needs a keyframe.
+    ScreenKey { call: String },
 }
+
+/// One sealed part of an encoded screen frame.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenReq {
+    pub call: String,
+    pub seq: u32,
+    pub part: u16,
+    pub parts: u16,
+    pub key: bool,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScreenResp {}
 
 /// One sealed audio frame of a call.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -428,6 +447,10 @@ pub struct CallView {
     pub since: i64,
     /// Audio flows over a direct connection (not a relay).
     pub direct: bool,
+    /// We share our screen.
+    pub screen_out: bool,
+    /// They share theirs.
+    pub screen_in: bool,
 }
 
 /// Short-lived, signed messages to one device via Nostr, for when no direct

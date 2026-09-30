@@ -455,3 +455,45 @@ fn voice_call() {
     a.stop();
     b.stop();
 }
+
+#[test]
+fn screen_share_in_call() {
+    use rim_core::engine::ScreenFrame;
+    use rim_core::CallState;
+    let a = Peer::start("alice", "pass-a");
+    let b = Peer::start("bob", "pass-b");
+    a.unlocked();
+    b.unlocked();
+    std::thread::sleep(Duration::from_millis(500));
+    let (bob_at_a, _) = befriend(&a, &b);
+    a.send(Command::CallStart { id: bob_at_a });
+    b.wait(20, "ringing", |e| matches!(e, Event::Call(v) if v.state == CallState::Ringing).then_some(()));
+    b.send(Command::CallAccept);
+    a.wait(20, "active", |e| matches!(e, Event::Call(v) if v.state == CallState::Active).then_some(()));
+    std::thread::sleep(Duration::from_millis(300));
+    a.send(Command::ScreenShare(true));
+    let out = a.wait(20, "screen out", |e| if let Event::ScreenOut(p) = e { Some(p.clone()) } else { None });
+    let inp = b.wait(20, "screen in", |e| if let Event::ScreenIn(p) = e { Some(p.clone()) } else { None });
+    let rx = inp.recv.lock().unwrap().take().unwrap();
+    let big: Vec<u8> = (0..500_000u32).map(|i| (i % 251) as u8).collect();
+    let send = out.send.clone().unwrap();
+    send.send(ScreenFrame { seq: 0, key: true, data: big.clone() }).unwrap();
+    send.send(ScreenFrame { seq: 0, key: false, data: vec![7; 100] }).unwrap();
+    let f1 = rx.recv_timeout(Duration::from_secs(10)).expect("first frame");
+    let f2 = rx.recv_timeout(Duration::from_secs(10)).expect("second frame");
+    assert!(f1.key && f1.data == big, "keyframe intact");
+    assert!(!f2.key && f2.data == vec![7; 100]);
+    // the viewer asks for a keyframe; the sender's app sees the flag
+    out.want_key.store(false, std::sync::atomic::Ordering::Relaxed);
+    b.send(Command::ScreenWantKey);
+    let end = std::time::Instant::now() + Duration::from_secs(10);
+    while !out.want_key.load(std::sync::atomic::Ordering::Relaxed) && std::time::Instant::now() < end {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(out.want_key.load(std::sync::atomic::Ordering::Relaxed), "keyframe request arrived");
+    a.send(Command::ScreenShare(false));
+    b.wait(20, "sharing stopped", |e| matches!(e, Event::Call(v) if !v.screen_in && v.state == CallState::Active).then_some(()));
+    a.send(Command::CallHangup);
+    a.stop();
+    b.stop();
+}

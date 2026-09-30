@@ -1,0 +1,30 @@
+import { Theme, TipLayer } from "theme.slint";
+
+// The other side's shared screen: view only.
+export component ScreenWindow inherits Window {
+    title: "RogueIM · " + root.name + "'s screen";
+    icon: @image-url("../assets/icon.png");
+    preferred-width: 1024px;
+    preferred-height: 640px;
+    background: #000000;
+    default-font-family: Theme.font;
+    in property <string> name;
+    in property <image> frame;
+    in property <bool> waiting: true;
+
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.frame;
+        image-fit: contain;
+        image-rendering: smooth;
+    }
+    if root.waiting: Text {
+        text: "waiting for " + root.name + "'s screen…";
+        color: Theme.dim;
+        font-size: Theme.fs;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+    TipLayer { }
+}

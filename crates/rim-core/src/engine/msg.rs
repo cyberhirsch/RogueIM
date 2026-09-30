@@ -331,7 +331,19 @@ impl Engine {
                 }
             }
         }
-        let env = self.open(&req.sender_curve, &req.msg)?;
+        let env = match self.open(&req.sender_curve, &req.msg) {
+            Ok(e) => e,
+            Err(e) => {
+                // A known device whose messages we cannot read: our sessions went
+                // out of step (e.g. one side crashed before saving). Start over.
+                if let Some((owner, entry)) = &known {
+                    if !matches!(req.msg, OlmMessage::PreKey(_)) {
+                        self.unwedge(owner, entry);
+                    }
+                }
+                return Err(e);
+            }
+        };
         // The envelope must name the device that owns this Olm key.
         let sender_device = env.device.clone();
         if let Some(p) = &from {
@@ -374,6 +386,28 @@ impl Engine {
             }
             None => self.on_stranger(from, &req.sender_curve, &sender_device, env, via),
         }
+    }
+
+    /// Drop the broken sessions with a device and send it something at once:
+    /// the new message opens a fresh session (a pre-key message), which the
+    /// other side accepts and prefers from then on.
+    fn unwedge(&mut self, owner: &str, entry: &DeviceEntry) {
+        let t = now();
+        if t - self.unwedged.get(&entry.curve).copied().unwrap_or(0) < 60 || owner.starts_with("pending:") {
+            return;
+        }
+        self.unwedged.insert(entry.curve.clone(), t);
+        self.sessions.remove(&entry.curve);
+        let body = match self.presence_for(owner) {
+            Some(p) => Body::Presence(p),
+            None => Body::Typing(false),
+        };
+        let targets: Vec<Target> = self.targets(owner).into_iter().filter(|x| x.entry.peer_id == entry.peer_id).collect();
+        for x in targets {
+            let _ = self.send_to_target(&x, &body, Some(0), None);
+        }
+        self.save();
+        tracing::debug!("reset the secure session with device {}", entry.peer_id);
     }
 
     fn account_matches(&self, owner: &str, account_pk: &str) -> bool {

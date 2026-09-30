@@ -20,21 +20,36 @@ const PIPELINE: usize = 8;
 
 #[derive(Default)]
 pub struct FilesRuntime {
-    /// Peers with at least one direct connection.
+    /// Peers with at least one direct (not relayed) connection.
     pub direct: HashSet<PeerId>,
+    /// Every open connection per peer, and whether it is direct.
+    pub conns: HashMap<PeerId, HashMap<libp2p::swarm::ConnectionId, bool>>,
     pub inflight: HashMap<OutboundRequestId, (String, u64)>,
     pub per_file: HashMap<String, HashSet<u64>>,
     pub dirty: bool,
 }
 
 impl FilesRuntime {
-    pub fn connection_up(&mut self, peer: PeerId, direct: bool) {
-        if direct {
-            self.direct.insert(peer);
-        }
+    /// Returns true if this is the peer's first direct connection.
+    pub fn connection_up(&mut self, peer: PeerId, id: libp2p::swarm::ConnectionId, direct: bool) -> bool {
+        self.conns.entry(peer).or_default().insert(id, direct);
+        direct && self.direct.insert(peer)
     }
-    pub fn connection_down(&mut self, peer: PeerId) {
-        self.direct.remove(&peer);
+
+    /// Returns true if the peer just lost its last direct connection.
+    pub fn connection_down(&mut self, peer: PeerId, id: libp2p::swarm::ConnectionId) -> bool {
+        let still = match self.conns.get_mut(&peer) {
+            Some(m) => {
+                m.remove(&id);
+                let d = m.values().any(|d| *d);
+                if m.is_empty() {
+                    self.conns.remove(&peer);
+                }
+                d
+            }
+            None => false,
+        };
+        !still && self.direct.remove(&peer)
     }
 }
 
@@ -273,8 +288,8 @@ impl Engine {
                 let targets = self.targets(&owner);
                 for t in targets {
                     if let Ok(pid) = t.entry.peer_id.parse::<PeerId>() {
-                        if !self.swarm.is_connected(&pid) {
-                            let _ = self.swarm.dial(pid);
+                        if !self.files_rt.direct.contains(&pid) {
+                            self.dial_direct(pid);
                         }
                     }
                 }

@@ -127,8 +127,8 @@ impl Engine {
         }
         self.register_addrs(peer, &addrs);
         if let Ok(pid) = peer.parse::<PeerId>() {
-            if !self.swarm.is_connected(&pid) {
-                let _ = self.swarm.dial(pid);
+            if !self.files_rt.direct.contains(&pid) {
+                self.dial_direct(pid);
             }
         }
     }

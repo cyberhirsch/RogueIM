@@ -7,12 +7,14 @@ mod desktop;
 mod dock;
 mod plugins;
 mod update;
+mod screen;
 mod voice;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::sync::Arc;
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
@@ -237,6 +239,10 @@ struct App {
     call: Option<CallView>,
     voice: Option<voice::Voice>,
     call_muted: bool,
+    share: Option<screen::Share>,
+    share_monitor: usize,
+    viewer: Option<ScreenWindow>,
+    viewer_stop: Option<Arc<std::sync::atomic::AtomicBool>>,
     update_rx: Option<Receiver<update::Progress>>,
     update_found: Option<update::Release>,
     /// The user started this check (so "up to date" and errors are shown).
@@ -1359,6 +1365,18 @@ fn handle_event(app: &AppRc, ev: Event) {
             }
         }
         Event::Call(v) => on_call(app, v),
+        Event::ScreenOut(pipe) => {
+            let idx = app.borrow().share_monitor;
+            match screen::start_share(pipe, idx) {
+                Ok(s) => app.borrow_mut().share = Some(s),
+                Err(e) => {
+                    notice(app, &format!("Screen sharing: {e}"));
+                    app.borrow().send(Command::ScreenShare(false));
+                }
+            }
+            refresh_call_ui(app);
+        }
+        Event::ScreenIn(pipe) => open_viewer(app, pipe),
         Event::CallMedia(pipe) => {
             match voice::start(pipe) {
                 Ok(v) => {
@@ -1706,6 +1724,10 @@ fn main() {
         call: None,
         voice: None,
         call_muted: false,
+        share: None,
+        share_monitor: 0,
+        viewer: None,
+        viewer_stop: None,
         update_rx: None,
         update_found: None,
         update_manual: false,
@@ -2243,6 +2265,34 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
     main.on_call_decline(move || ap.borrow().send(Command::CallDecline));
     let ap = app.clone();
     main.on_call_hangup(move || ap.borrow().send(Command::CallHangup));
+    let ap = app.clone();
+    main.on_call_share(move || {
+        let on = ap.borrow().call.as_ref().map(|c| c.screen_out).unwrap_or(false);
+        if on {
+            ap.borrow_mut().share = None;
+        }
+        ap.borrow().send(Command::ScreenShare(!on));
+    });
+    let ap = app.clone();
+    main.on_call_view(move || {
+        if let Some(w) = &ap.borrow().viewer {
+            let _ = w.show();
+        }
+        refresh_call_ui(&ap);
+    });
+    let ap = app.clone();
+    main.on_call_monitor_pick(move |i| {
+        {
+            let mut a = ap.borrow_mut();
+            a.share_monitor = i.max(0) as usize;
+            // Already sharing: switch screens on the fly.
+            let idx = a.share_monitor;
+            if let Some(s) = a.share.as_mut() {
+                s.switch(idx);
+            }
+        }
+        refresh_call_ui(&ap);
+    });
     let ap = app.clone();
     main.on_call_mute(move || {
         {
@@ -3020,6 +3070,17 @@ fn on_call(app: &AppRc, v: CallView) {
     {
         let mut a = app.borrow_mut();
         let was_ringing = a.call.as_ref().map(|c| c.state == CallState::Ringing).unwrap_or(false);
+        if ended || !v.screen_out {
+            a.share = None;
+        }
+        if ended || !v.screen_in {
+            if let Some(s) = a.viewer_stop.take() {
+                s.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(w) = a.viewer.take() {
+                let _ = w.hide();
+            }
+        }
         a.call = Some(v);
         if ended {
             a.voice = None;
@@ -3060,6 +3121,12 @@ fn refresh_call_ui(app: &AppRc) {
     m.set_call_state(state.into());
     m.set_call_text(text.into());
     m.set_call_muted(a.call_muted);
+    m.set_call_screen_out(a.call.as_ref().map(|c| c.screen_out).unwrap_or(false));
+    m.set_call_screen_in(a.call.as_ref().map(|c| c.screen_in).unwrap_or(false));
+    m.set_call_viewer_open(a.viewer.as_ref().map(|w| w.window().is_visible()).unwrap_or(false));
+    let n = if state == "active" { screen::monitors().len() } else { 0 };
+    m.set_call_monitors(n as i32);
+    m.set_call_monitor((a.share_monitor % n.max(1)) as i32);
 }
 
 /// Ring every 2 seconds while a call comes in (quietly in Occupied / DND).
@@ -3068,4 +3135,45 @@ fn ring_tick(app: &AppRc, ticks: u64) {
     if ringing && ticks % 4 == 0 && !busy(app) {
         play_event(app, desktop::Sound::Urgent);
     }
+}
+
+/// Show the other side's screen in its own window.
+fn open_viewer(app: &AppRc, pipe: Arc<rim_core::engine::ScreenPipe>) {
+    let Some(engine) = app.borrow().engine.clone() else { return };
+    let name = app.borrow().call.as_ref().map(|c| c.name.clone()).unwrap_or_default();
+    let w = match ScreenWindow::new() {
+        Ok(w) => w,
+        Err(e) => return notice(app, &format!("Screen window: {e}")),
+    };
+    apply_theme(&w.global::<Theme>(), palette(&app.borrow().settings.theme));
+    w.set_name(name.into());
+    let weak = w.as_weak();
+    let shown = move |buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>| {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w) = weak.upgrade() {
+                w.set_waiting(false);
+                w.set_frame(slint::Image::from_rgba8(buf));
+            }
+        });
+    };
+    match screen::start_view(pipe, engine, shown) {
+        Ok(stop) => {
+            let ap = app.clone();
+            w.window().on_close_requested(move || {
+                // Closing only hides it; "view screen" brings it back.
+                slint::Timer::single_shot(Duration::from_millis(50), {
+                    let ap = ap.clone();
+                    move || refresh_call_ui(&ap)
+                });
+                CloseRequestResponse::HideWindow
+            });
+            let _ = w.show();
+            let mut a = app.borrow_mut();
+            a.viewer_stop = Some(stop);
+            a.viewer = Some(w);
+        }
+        Err(e) => notice(app, &format!("Screen: {e}")),
+    }
+    refresh_call_ui(app);
 }
