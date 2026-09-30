@@ -6,6 +6,7 @@
 mod desktop;
 mod dock;
 mod plugins;
+mod update;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -63,6 +64,8 @@ struct Settings {
     hotkeys: Vec<String>,
     /// When the plugin layout last changed (synced between own devices, newest wins).
     layout_updated: i64,
+    update_check: bool,
+    update_auto: bool,
 }
 
 impl Default for Settings {
@@ -95,6 +98,8 @@ impl Default for Settings {
             sound_map: desktop::Sound::ALL.iter().map(|s| s.name().to_string()).collect(),
             hotkeys: desktop::DEFAULT_HOTKEYS.iter().map(|s| s.to_string()).collect(),
             layout_updated: 0,
+            update_check: true,
+            update_auto: false,
         }
     }
 }
@@ -228,6 +233,10 @@ struct App {
     plugin_net: Vec<(String, String, String)>,
     my_os: String,
     my_laptop: bool,
+    update_rx: Option<Receiver<update::Progress>>,
+    update_found: Option<update::Release>,
+    /// The user started this check (so "up to date" and errors are shown).
+    update_manual: bool,
 }
 
 type AppRc = Rc<RefCell<App>>;
@@ -1572,6 +1581,12 @@ fn main() {
     }
     let (profile, port) = parse_args();
     let autostarted = std::env::args().any(|a| a == "--autostart");
+    // Restarted by the updater: let the old process let go of the profile first.
+    let after_update = std::env::args().any(|a| a == "--after-update");
+    if after_update {
+        std::thread::sleep(Duration::from_secs(4));
+    }
+    update::clean_up();
     let offset = UtcOffset::current_local_offset().unwrap_or(UtcOffset::UTC);
     let dir = profile_dir(&profile);
     let settings = load_settings(&dir);
@@ -1593,6 +1608,9 @@ fn main() {
     main.set_s_hk_away(hk[3].clone());
     main.set_s_hk_dnd(hk[4].clone());
     main.set_s_start_min(settings.start_min);
+    main.set_s_update_check(settings.update_check);
+    main.set_s_update_auto(settings.update_auto);
+    main.set_update_status(format!("this is v{}", env!("CARGO_PKG_VERSION")).into());
     main.set_s_notify_online(settings.notify_online);
     main.set_s_hide_offline(settings.hide_offline);
     main.set_s_sounds(settings.sounds);
@@ -1650,6 +1668,9 @@ fn main() {
         plugin_net: vec![],
         my_os: String::new(),
         my_laptop: false,
+        update_rx: None,
+        update_found: None,
+        update_manual: false,
     }));
     for e in register_hotkeys(&app) {
         eprintln!("hotkey {e}");
@@ -1687,6 +1708,7 @@ fn main() {
             }
             poll_desktop(&app);
             poll_plugins(&app);
+            poll_update(&app);
             let expired = app.borrow().notice_until.map(|t| Instant::now() > t).unwrap_or(false);
             if expired {
                 app.borrow_mut().notice_until = None;
@@ -1704,6 +1726,11 @@ fn main() {
         let mut last_panel = 0;
         slow.start(slint::TimerMode::Repeated, Duration::from_millis(500), move || {
             ticks += 1;
+            // Updates: 30 s after start, then every 6 hours.
+            if (ticks == 60 || ticks % 43_200 == 0) && app.borrow().settings.update_check && app.borrow().update_rx.is_none() {
+                let auto = app.borrow().settings.update_auto;
+                app.borrow_mut().update_rx = Some(update::start(auto));
+            }
             if ticks % 2 == 0 {
                 idle_tick(&app);
                 autohide_tick(&app);
@@ -2125,6 +2152,8 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
                 "notify-online" => a.settings.notify_online = m.get_s_notify_online(),
                 "typing" => a.send(Command::SetSendTyping(m.get_s_typing())),
                 "start-min" => a.settings.start_min = m.get_s_start_min(),
+                "update-check" => a.settings.update_check = m.get_s_update_check(),
+                "update-auto" => a.settings.update_auto = m.get_s_update_auto(),
                 "popups" => a.settings.popups = m.get_s_popups(),
                 "autostart" => {
                     a.settings.autostart = m.get_s_autostart();
@@ -2167,6 +2196,38 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
         }
         redock(&ap);
         notice(&ap, "Saved.");
+    });
+    let ap = app.clone();
+    main.on_update_check_now(move || {
+        let mut a = ap.borrow_mut();
+        if a.update_rx.is_some() {
+            return;
+        }
+        a.update_manual = true;
+        if let Some(m) = a.main.upgrade() {
+            m.set_update_status("checking…".into());
+        }
+        let auto = a.settings.update_auto;
+        a.update_rx = Some(update::start(auto));
+    });
+    let ap = app.clone();
+    main.on_update_install(move || {
+        let mut a = ap.borrow_mut();
+        if let Some(r) = a.update_found.take() {
+            a.update_manual = true;
+            a.update_rx = Some(update::install_now(r));
+        }
+    });
+    let ap = app.clone();
+    main.on_update_later(move || {
+        if let Some(m) = ap.borrow().main.upgrade() {
+            m.set_update_state("".into());
+        }
+    });
+    let ap = app.clone();
+    main.on_update_restart(move || {
+        update::restart();
+        shutdown(&ap);
     });
     let ap = app.clone();
     main.on_bar_resized(move |dx| {
@@ -2827,4 +2888,50 @@ fn install_file_drop(app: &AppRc, w: &slint::Window, key: Option<String>) {
         }
         EventResult::Propagate
     });
+}
+
+// ================================================================ updates
+
+fn poll_update(app: &AppRc) {
+    let msgs: Vec<update::Progress> = match &app.borrow().update_rx {
+        Some(rx) => rx.try_iter().collect(),
+        None => return,
+    };
+    let Some(m) = app.borrow().main.upgrade() else { return };
+    for p in msgs {
+        let manual = app.borrow().update_manual;
+        match p {
+            update::Progress::UpToDate => {
+                app.borrow_mut().update_rx = None;
+                m.set_update_status(format!("v{} is the newest", env!("CARGO_PKG_VERSION")).into());
+            }
+            update::Progress::Available(r) => {
+                m.set_update_state("available".into());
+                m.set_update_text(format!("RogueIM {} is available", r.tag).into());
+                m.set_update_status(format!("{} available", r.tag).into());
+                let mut a = app.borrow_mut();
+                a.update_found = Some(r);
+                a.update_rx = None;
+            }
+            update::Progress::Step(s) => {
+                m.set_update_state("busy".into());
+                m.set_update_text(s.clone().into());
+                m.set_update_status(s.into());
+            }
+            update::Progress::Ready(tag) => {
+                app.borrow_mut().update_rx = None;
+                m.set_update_state("ready".into());
+                m.set_update_text(format!("{tag} installed").into());
+                m.set_update_status(format!("{tag} installed; restart to use it").into());
+            }
+            update::Progress::Failed(e) => {
+                app.borrow_mut().update_rx = None;
+                m.set_update_state("".into());
+                m.set_update_status(e.clone().into());
+                if manual {
+                    notice(app, &format!("Update: {e}"));
+                }
+            }
+        }
+    }
 }

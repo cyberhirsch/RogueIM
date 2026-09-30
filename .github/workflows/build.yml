@@ -133,6 +133,19 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+      - name: Checksums and signature (for the in-app updater)
+        env:
+          RIM_RELEASE_KEY: ${{ secrets.RIM_RELEASE_KEY }}
+        run: |
+          cd dist
+          sha256sum * > SHA256SUMS
+          if [ -z "$RIM_RELEASE_KEY" ]; then echo "RIM_RELEASE_KEY secret missing"; exit 1; fi
+          umask 077
+          printf '%s\n' "$RIM_RELEASE_KEY" > "$RUNNER_TEMP/key.pem"
+          openssl pkeyutl -sign -inkey "$RUNNER_TEMP/key.pem" -rawin -in SHA256SUMS -out SHA256SUMS.sig
+          rm -f "$RUNNER_TEMP/key.pem"
+          cat SHA256SUMS
+
       - uses: softprops/action-gh-release@v2
         with:
           files: dist/*

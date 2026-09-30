@@ -179,6 +179,12 @@ export component MainWindow inherits Window {
     in-out property <string> folder-edit-text;
     in property <string> plugin-confirm;
     in property <string> plugin-confirm-text;
+    in-out property <bool> s-update-check: true;
+    in-out property <bool> s-update-auto;
+    // "", "available", "busy", "ready"
+    in property <string> update-state;
+    in property <string> update-text;
+    in property <string> update-status;
 
     // contact details
     in-out property <string> d-id;
@@ -297,6 +303,10 @@ export component MainWindow inherits Window {
     callback plugin-move(string, int);
     callback save-hotkeys();
     callback bar-resized(length);
+    callback update-install();
+    callback update-later();
+    callback update-restart();
+    callback update-check-now();
     callback sound-toggle(int, bool);
     callback sound-cycle(int, int);
     callback sound-pick(int);
@@ -697,6 +707,13 @@ export component MainWindow inherits Window {
                     RCheck { text: "open chats on new messages"; checked <=> root.s-popups; toggled => { root.setting-toggled("popups"); } }
                     RCheck { text: "start with the computer"; checked <=> root.s-autostart; toggled => { root.setting-toggled("autostart"); } }
                     RCheck { text: "start hidden (tray only)"; checked <=> root.s-start-min; toggled => { root.setting-toggled("start-min"); } }
+                    RCheck { text: "check for updates (GitHub)"; checked <=> root.s-update-check; toggled => { root.setting-toggled("update-check"); } }
+                    RCheck { text: "install updates automatically"; checked <=> root.s-update-auto; toggled => { root.setting-toggled("update-auto"); } }
+                    HorizontalLayout {
+                        spacing: 4px;
+                        RButton { text: "check now"; clicked => { root.update-check-now(); } }
+                        RCaption { text: root.update-status; vertical-alignment: center; wrap: word-wrap; }
+                    }
                     RCheck { text: "auto-hide the bar"; checked <=> root.s-autohide; toggled => { root.setting-toggled("autohide"); } }
                     HorizontalLayout {
                         spacing: 4px;
@@ -1106,6 +1123,21 @@ export component MainWindow inherits Window {
                         }
                     }
                 }
+            }
+        }
+
+        // update banner
+        if root.update-state != "": Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: Theme.accent;
+            HorizontalLayout {
+                padding: 4px;
+                spacing: 4px;
+                Text { text: root.update-text; color: Theme.accent; font-size: Theme.small; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+                if root.update-state == "available": RButton { text: "install"; tip: "download, check the signature, install; then restart"; clicked => { root.update-install(); } }
+                if root.update-state == "available": RButton { text: "later"; tone: Theme.dim; clicked => { root.update-later(); } }
+                if root.update-state == "ready": RButton { text: "restart"; tip: "restart RogueIM to use the new version"; clicked => { root.update-restart(); } }
             }
         }
 

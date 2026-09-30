@@ -25,6 +25,13 @@ macOS cannot reserve screen space, so maximised windows go under the bar; "auto-
 
 Linux runtime needs GTK 3, libayatana-appindicator3, libxdo and ALSA (usually preinstalled on desktops).
 
+### Updates
+
+From v0.1.4 on, RIM checks GitHub for new releases (settings → general; can be switched off). It installs
+only releases whose files match a checksum list signed with the RogueIM release key, then restarts itself.
+Automatic installation is off by default: you get a notice with an "install" button. Inside a
+system folder like Program Files, RIM cannot replace itself; unpack it somewhere you own.
+
 ## Run from source
 
 ```
