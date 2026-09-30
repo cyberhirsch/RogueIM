@@ -62,7 +62,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Presence | Online, Free for Chat, Away, N/A, Occupied, DND, Invisible; auto-away/N/A; OS icon with desktop/laptop/**phone** frame per device |
 | Messages | Plain text only. Delivery states, typing, read receipts (opt-in), edit/delete, reply, urgent flag, auto-reply, disappearing messages, search, note to self |
 | Offline delivery | Nostr mailbox (sealed, expiring, deleted after fetch), buddy relays, DHT slots |
-| Voice calls | 1:1, end-to-end encrypted, Opus with noise suppression, over the direct connection; no video, no group calls. No echo cancellation yet: use headphones |
+| Voice calls | 1:1, end-to-end encrypted, Opus with echo cancellation (speexdsp) and noise suppression (RNNoise), over the direct connection; no video, no group calls |
 | Groups | Invite, add/remove with key rotation, rename, leave; signed group state |
 | Files | Direct connections only, encrypted, BLAKE3-verified, resumable |
 | Multi-device | Link devices, sync contacts/settings/history/read state, rename, remote lock, revoke (the revoked device wipes its local data) |

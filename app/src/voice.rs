@@ -3,8 +3,10 @@
 //!
 //! Everything runs at 48 kHz mono internally (Opus' native rate, 20 ms
 //! frames); devices at other rates or with more channels are converted.
-//! There is no echo cancellation yet: with loudspeakers the other side may
-//! hear itself, so headphones are recommended.
+//! Echo cancellation: whatever the speakers actually play is kept as a
+//! reference, and the echo of it is subtracted from the microphone
+//! (speexdsp's adaptive filter, 125 ms tail, plus its residual echo
+//! suppressor) before noise suppression and encoding.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -52,6 +54,32 @@ impl Resampler {
 }
 
 type Ring = Arc<Mutex<VecDeque<f32>>>;
+
+/// 10 ms at 48 kHz: the block size of both the echo canceller and RNNoise.
+const BLOCK: usize = 480;
+/// Echo tail the filter covers: output + input latency + room.
+const TAIL: i32 = 6000;
+
+/// Echo canceller on 10 ms blocks at 48 kHz.
+struct EchoCanceller {
+    aec: aec_rs::Aec,
+}
+
+impl EchoCanceller {
+    fn new(suppress: bool) -> Self {
+        EchoCanceller { aec: aec_rs::Aec::new(&aec_rs::AecConfig { frame_size: BLOCK, filter_length: TAIL, sample_rate: RATE, enable_preprocess: suppress }) }
+    }
+
+    /// `mic` minus the echo of `far` (what the speakers played).
+    fn process(&self, mic: &[f32], far: &[f32]) -> Vec<f32> {
+        let to16 = |x: &f32| (x.clamp(-1.0, 1.0) * 32767.0) as i16;
+        let m: Vec<i16> = mic.iter().map(to16).collect();
+        let f: Vec<i16> = far.iter().map(to16).collect();
+        let mut out = vec![0i16; BLOCK];
+        self.aec.cancel_echo(&m, &f, &mut out);
+        out.iter().map(|x| *x as f32 / 32767.0).collect()
+    }
+}
 
 pub struct Voice {
     _input: cpal::Stream,
@@ -104,14 +132,16 @@ fn input_stream(dev: &cpal::Device, ring: Ring) -> Result<(cpal::Stream, u32), S
     Ok((s, rate))
 }
 
-fn pull<T: Copy>(data: &mut [T], channels: usize, conv: impl Fn(f32) -> T, ring: &Ring, playing: &AtomicBool, prebuffer: usize) {
+fn pull<T: Copy>(data: &mut [T], channels: usize, conv: impl Fn(f32) -> T, ring: &Ring, playing: &AtomicBool, prebuffer: usize, reference: &Ring) {
     let mut r = ring.lock().unwrap();
+    let mut played = Vec::with_capacity(data.len() / channels.max(1));
     if !playing.load(Ordering::Relaxed) && r.len() >= prebuffer {
         playing.store(true, Ordering::Relaxed);
     }
     let on = playing.load(Ordering::Relaxed);
     for frame in data.chunks_mut(channels.max(1)) {
         let s = if on { r.pop_front().unwrap_or(0.0) } else { 0.0 };
+        played.push(s);
         for x in frame.iter_mut() {
             *x = conv(s);
         }
@@ -120,9 +150,18 @@ fn pull<T: Copy>(data: &mut [T], channels: usize, conv: impl Fn(f32) -> T, ring:
     if on && r.is_empty() {
         playing.store(false, Ordering::Relaxed);
     }
+    drop(r);
+    // What really left the speakers: the echo canceller's reference.
+    let mut f = reference.lock().unwrap();
+    f.extend(played);
+    let cap = prebuffer * 20;
+    if f.len() > cap {
+        let n = f.len() - cap;
+        f.drain(..n);
+    }
 }
 
-fn output_stream(dev: &cpal::Device, ring: Ring) -> Result<(cpal::Stream, u32), String> {
+fn output_stream(dev: &cpal::Device, ring: Ring, reference: Ring) -> Result<(cpal::Stream, u32), String> {
     let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
     let rate = cfg.sample_rate();
     let ch = cfg.channels() as usize;
@@ -131,10 +170,10 @@ fn output_stream(dev: &cpal::Device, ring: Ring) -> Result<(cpal::Stream, u32), 
     let pre = rate as usize * PREBUFFER_MS / 1000;
     let err = |e| eprintln!("speakers: {e}");
     let s = match cfg.sample_format() {
-        cpal::SampleFormat::F32 => dev.build_output_stream(&sc, move |d: &mut [f32], _| pull(d, ch, |x| x, &ring, &playing, pre), err, None),
-        cpal::SampleFormat::I16 => dev.build_output_stream(&sc, move |d: &mut [i16], _| pull(d, ch, |x| (x.clamp(-1.0, 1.0) * 32767.0) as i16, &ring, &playing, pre), err, None),
-        cpal::SampleFormat::U16 => dev.build_output_stream(&sc, move |d: &mut [u16], _| pull(d, ch, |x| ((x.clamp(-1.0, 1.0) + 1.0) * 32767.5) as u16, &ring, &playing, pre), err, None),
-        cpal::SampleFormat::I32 => dev.build_output_stream(&sc, move |d: &mut [i32], _| pull(d, ch, |x| (x.clamp(-1.0, 1.0) as f64 * 2_147_483_647.0) as i32, &ring, &playing, pre), err, None),
+        cpal::SampleFormat::F32 => dev.build_output_stream(&sc, move |d: &mut [f32], _| pull(d, ch, |x| x, &ring, &playing, pre, &reference), err, None),
+        cpal::SampleFormat::I16 => dev.build_output_stream(&sc, move |d: &mut [i16], _| pull(d, ch, |x| (x.clamp(-1.0, 1.0) * 32767.0) as i16, &ring, &playing, pre, &reference), err, None),
+        cpal::SampleFormat::U16 => dev.build_output_stream(&sc, move |d: &mut [u16], _| pull(d, ch, |x| ((x.clamp(-1.0, 1.0) + 1.0) * 32767.5) as u16, &ring, &playing, pre, &reference), err, None),
+        cpal::SampleFormat::I32 => dev.build_output_stream(&sc, move |d: &mut [i32], _| pull(d, ch, |x| (x.clamp(-1.0, 1.0) as f64 * 2_147_483_647.0) as i32, &ring, &playing, pre, &reference), err, None),
         f => return Err(format!("unsupported speaker format {f:?}")),
     }
     .map_err(|e| e.to_string())?;
@@ -149,8 +188,9 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
     let spk = host.default_output_device().ok_or("no speakers found")?;
     let cap: Ring = Default::default();
     let play: Ring = Default::default();
+    let reference: Ring = Default::default();
     let (input, in_rate) = input_stream(&mic, cap.clone())?;
-    let (output, out_rate) = output_stream(&spk, play.clone())?;
+    let (output, out_rate) = output_stream(&spk, play.clone(), reference.clone())?;
     input.play().map_err(|e| e.to_string())?;
     output.play().map_err(|e| e.to_string())?;
     let muted = Arc::new(AtomicBool::new(false));
@@ -165,6 +205,9 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
             let _ = enc.set_inband_fec(true);
             let _ = enc.set_packet_loss_perc(5);
             let mut rs = Resampler::new(in_rate, RATE);
+            let mut ref_rs = Resampler::new(out_rate, RATE);
+            let echo = EchoCanceller::new(true);
+            let mut far: VecDeque<f32> = VecDeque::new();
             let mut denoise = nnnoiseless::DenoiseState::new();
             let mut at48: Vec<f32> = vec![];
             let mut clean: Vec<f32> = vec![];
@@ -174,9 +217,20 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
                 std::thread::sleep(Duration::from_millis(10));
                 let raw: Vec<f32> = cap.lock().unwrap().drain(..).collect();
                 rs.run(&raw, &mut at48);
-                // RNNoise works on 480-sample frames in 16-bit range.
-                while at48.len() >= nnnoiseless::DenoiseState::FRAME_SIZE {
-                    let chunk: Vec<f32> = at48.drain(..nnnoiseless::DenoiseState::FRAME_SIZE).map(|x| x * 32767.0).collect();
+                let played: Vec<f32> = reference.lock().unwrap().drain(..).collect();
+                let mut p48 = vec![];
+                ref_rs.run(&played, &mut p48);
+                far.extend(p48);
+                // Keep the reference from running far ahead of the microphone.
+                if far.len() > RATE as usize / 5 {
+                    let n = far.len() - RATE as usize / 10;
+                    far.drain(..n);
+                }
+                // Echo cancellation, then RNNoise (both on 10 ms blocks, RNNoise in 16-bit range).
+                while at48.len() >= BLOCK {
+                    let mic: Vec<f32> = at48.drain(..BLOCK).collect();
+                    let far_block: Vec<f32> = (0..BLOCK).map(|_| far.pop_front().unwrap_or(0.0)).collect();
+                    let chunk: Vec<f32> = echo.process(&mic, &far_block).iter().map(|x| x * 32767.0).collect();
                     denoise.process_frame(&mut dn_out, &chunk);
                     clean.extend(dn_out.iter().map(|x| x / 32767.0));
                 }
@@ -241,7 +295,33 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::Resampler;
+    use super::{EchoCanceller, Resampler, BLOCK};
+
+    fn energy(v: &[f32]) -> f32 {
+        v.iter().map(|x| x * x).sum::<f32>() / v.len() as f32
+    }
+
+    /// Far-end noise plays; the microphone hears it 30 ms later, attenuated.
+    /// After the filter adapts, the echo must be at least 15 dB quieter.
+    #[test]
+    fn echo_is_cancelled() {
+        let aec = EchoCanceller::new(false);
+        let mut seed = 1u32;
+        let mut noise = || {
+            seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            (seed >> 8) as f32 / (1u32 << 24) as f32 - 0.5
+        };
+        let delay = 48 * 30;
+        let far: Vec<f32> = (0..48_000 * 6).map(|_| noise() * 0.4).collect();
+        let mic: Vec<f32> = (0..far.len()).map(|i| if i >= delay { far[i - delay] * 0.5 } else { 0.0 }).collect();
+        let mut out = vec![];
+        for (m, f) in mic.chunks(BLOCK).zip(far.chunks(BLOCK)) {
+            out.extend(aec.process(m, f));
+        }
+        let last = out.len() - 48_000;
+        let erle = 10.0 * (energy(&mic[last..]) / energy(&out[last..]).max(1e-12)).log10();
+        assert!(erle > 15.0, "echo only reduced by {erle:.1} dB");
+    }
 
     #[test]
     fn resampler_keeps_length_and_shape() {
