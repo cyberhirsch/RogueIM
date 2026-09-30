@@ -185,6 +185,11 @@ export component MainWindow inherits Window {
     in property <string> update-state;
     in property <string> update-text;
     in property <string> update-status;
+    // "", "calling", "ringing", "active"
+    in property <string> call-state;
+    in property <string> call-text;
+    in property <bool> call-muted;
+    in property <string> dchat-call-state;
 
     // contact details
     in-out property <string> d-id;
@@ -307,6 +312,11 @@ export component MainWindow inherits Window {
     callback update-later();
     callback update-restart();
     callback update-check-now();
+    callback call-accept();
+    callback call-decline();
+    callback call-hangup();
+    callback call-mute();
+    callback dchat-call-toggle();
     callback sound-toggle(int, bool);
     callback sound-cycle(int, int);
     callback sound-pick(int);
@@ -1092,6 +1102,7 @@ export component MainWindow inherits Window {
                 edit-commit(i, t) => { root.dchat-edit(i, t); }
                 file-send => { root.dchat-file-send(); }
                 file-action(a, i) => { root.dchat-file-action(a, i); }
+                if root.dchat-mode == "contact": RButton { text: root.dchat-call-state == "" ? "call" : "hang up"; height: 18px; tone: root.dchat-call-state == "" ? Theme.fg : Theme.red; tip: root.dchat-call-state == "" ? "voice call (needs a direct connection; headphones recommended)" : "end the call"; clicked => { root.dchat-call-toggle(); } }
                 TButton { glyph: "^"; tip: "open in its own window"; clicked => { root.dchat-undock(); } }
                 TButton { glyph: "x"; danger: true; tip: "close this chat"; clicked => { root.dchat-close(); } }
             }
@@ -1122,6 +1133,27 @@ export component MainWindow inherits Window {
                             check(v) => { root.gadget-check(g.id, it.id, v); }
                         }
                     }
+                }
+            }
+        }
+
+        // call banner
+        if root.call-state != "": Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: root.call-state == "ringing" ? Theme.red : Theme.accent;
+            background: root.call-state == "ringing" ? Theme.hover : transparent;
+            VerticalLayout {
+                padding: 4px;
+                spacing: 3px;
+                Text { text: root.call-text; color: Theme.accent; font-size: Theme.small; font-weight: 700; wrap: word-wrap; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    if root.call-state == "ringing": RButton { text: "accept"; tip: "answer the call"; clicked => { root.call-accept(); } }
+                    if root.call-state == "ringing": RButton { text: "decline"; tone: Theme.red; clicked => { root.call-decline(); } }
+                    if root.call-state == "active": RButton { text: root.call-muted ? "unmute" : "mute"; tip: "microphone on / off"; clicked => { root.call-mute(); } }
+                    if root.call-state == "active" || root.call-state == "calling": RButton { text: "hang up"; tone: Theme.red; clicked => { root.call-hangup(); } }
                 }
             }
         }

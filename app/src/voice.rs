@@ -1,0 +1,260 @@
+//! Audio for voice calls: microphone -> noise suppression -> Opus -> engine,
+//! and engine -> jitter handling -> Opus decode -> speakers.
+//!
+//! Everything runs at 48 kHz mono internally (Opus' native rate, 20 ms
+//! frames); devices at other rates or with more channels are converted.
+//! There is no echo cancellation yet: with loudspeakers the other side may
+//! hear itself, so headphones are recommended.
+
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
+
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+use rim_core::engine::MediaPipe;
+
+const RATE: u32 = 48_000;
+/// 20 ms at 48 kHz.
+const FRAME: usize = 960;
+/// Start playing once this much audio is buffered, cap the delay at the second.
+const PREBUFFER_MS: usize = 60;
+const MAX_BUFFER_MS: usize = 250;
+
+/// Linear resampler that keeps its position across blocks.
+struct Resampler {
+    step: f64,
+    pos: f64,
+    prev: f32,
+}
+
+impl Resampler {
+    fn new(from: u32, to: u32) -> Self {
+        Resampler { step: from as f64 / to as f64, pos: 0.0, prev: 0.0 }
+    }
+
+    /// Index 0 is the last sample of the previous block, then `input`.
+    fn run(&mut self, input: &[f32], out: &mut Vec<f32>) {
+        if input.is_empty() {
+            return;
+        }
+        let at = |k: usize| if k == 0 { self.prev } else { input[k - 1] };
+        let last = input.len() as f64; // highest index
+        while self.pos + 1.0 <= last {
+            let i = self.pos.floor() as usize;
+            let f = (self.pos - i as f64) as f32;
+            out.push(at(i) + (at(i + 1) - at(i)) * f);
+            self.pos += self.step;
+        }
+        self.pos -= last;
+        self.prev = input[input.len() - 1];
+    }
+}
+
+type Ring = Arc<Mutex<VecDeque<f32>>>;
+
+pub struct Voice {
+    _input: cpal::Stream,
+    _output: cpal::Stream,
+    muted: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+}
+
+impl Voice {
+    pub fn set_muted(&self, m: bool) {
+        self.muted.store(m, Ordering::Relaxed);
+    }
+}
+
+impl Drop for Voice {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Mono f32 from any sample format / channel count.
+fn push_mono<T: Copy>(data: &[T], channels: usize, conv: impl Fn(T) -> f32, ring: &Ring) {
+    let mut r = ring.lock().unwrap();
+    for frame in data.chunks(channels.max(1)) {
+        let s: f32 = frame.iter().map(|x| conv(*x)).sum::<f32>() / frame.len() as f32;
+        r.push_back(s);
+    }
+    // Never let the capture side pile up (e.g. while the encoder is stalled).
+    let cap = RATE as usize;
+    if r.len() > cap {
+        let n = r.len() - cap;
+        r.drain(..n);
+    }
+}
+
+fn input_stream(dev: &cpal::Device, ring: Ring) -> Result<(cpal::Stream, u32), String> {
+    let cfg = dev.default_input_config().map_err(|e| e.to_string())?;
+    let rate = cfg.sample_rate();
+    let ch = cfg.channels() as usize;
+    let sc: cpal::StreamConfig = cfg.clone().into();
+    let err = |e| eprintln!("microphone: {e}");
+    let s = match cfg.sample_format() {
+        cpal::SampleFormat::F32 => dev.build_input_stream(&sc, move |d: &[f32], _| push_mono(d, ch, |x| x, &ring), err, None),
+        cpal::SampleFormat::I16 => dev.build_input_stream(&sc, move |d: &[i16], _| push_mono(d, ch, |x| x as f32 / 32768.0, &ring), err, None),
+        cpal::SampleFormat::U16 => dev.build_input_stream(&sc, move |d: &[u16], _| push_mono(d, ch, |x| (x as f32 - 32768.0) / 32768.0, &ring), err, None),
+        cpal::SampleFormat::I32 => dev.build_input_stream(&sc, move |d: &[i32], _| push_mono(d, ch, |x| x as f32 / 2_147_483_648.0, &ring), err, None),
+        f => return Err(format!("unsupported microphone format {f:?}")),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok((s, rate))
+}
+
+fn pull<T: Copy>(data: &mut [T], channels: usize, conv: impl Fn(f32) -> T, ring: &Ring, playing: &AtomicBool, prebuffer: usize) {
+    let mut r = ring.lock().unwrap();
+    if !playing.load(Ordering::Relaxed) && r.len() >= prebuffer {
+        playing.store(true, Ordering::Relaxed);
+    }
+    let on = playing.load(Ordering::Relaxed);
+    for frame in data.chunks_mut(channels.max(1)) {
+        let s = if on { r.pop_front().unwrap_or(0.0) } else { 0.0 };
+        for x in frame.iter_mut() {
+            *x = conv(s);
+        }
+    }
+    // Ran dry: wait for the buffer to fill again (smoother than stuttering).
+    if on && r.is_empty() {
+        playing.store(false, Ordering::Relaxed);
+    }
+}
+
+fn output_stream(dev: &cpal::Device, ring: Ring) -> Result<(cpal::Stream, u32), String> {
+    let cfg = dev.default_output_config().map_err(|e| e.to_string())?;
+    let rate = cfg.sample_rate();
+    let ch = cfg.channels() as usize;
+    let sc: cpal::StreamConfig = cfg.clone().into();
+    let playing = Arc::new(AtomicBool::new(false));
+    let pre = rate as usize * PREBUFFER_MS / 1000;
+    let err = |e| eprintln!("speakers: {e}");
+    let s = match cfg.sample_format() {
+        cpal::SampleFormat::F32 => dev.build_output_stream(&sc, move |d: &mut [f32], _| pull(d, ch, |x| x, &ring, &playing, pre), err, None),
+        cpal::SampleFormat::I16 => dev.build_output_stream(&sc, move |d: &mut [i16], _| pull(d, ch, |x| (x.clamp(-1.0, 1.0) * 32767.0) as i16, &ring, &playing, pre), err, None),
+        cpal::SampleFormat::U16 => dev.build_output_stream(&sc, move |d: &mut [u16], _| pull(d, ch, |x| ((x.clamp(-1.0, 1.0) + 1.0) * 32767.5) as u16, &ring, &playing, pre), err, None),
+        cpal::SampleFormat::I32 => dev.build_output_stream(&sc, move |d: &mut [i32], _| pull(d, ch, |x| (x.clamp(-1.0, 1.0) as f64 * 2_147_483_647.0) as i32, &ring, &playing, pre), err, None),
+        f => return Err(format!("unsupported speaker format {f:?}")),
+    }
+    .map_err(|e| e.to_string())?;
+    Ok((s, rate))
+}
+
+/// Start audio for an active call.
+pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
+    let from_net = pipe.recv.lock().unwrap().take().ok_or("audio already taken")?;
+    let host = cpal::default_host();
+    let mic = host.default_input_device().ok_or("no microphone found")?;
+    let spk = host.default_output_device().ok_or("no speakers found")?;
+    let cap: Ring = Default::default();
+    let play: Ring = Default::default();
+    let (input, in_rate) = input_stream(&mic, cap.clone())?;
+    let (output, out_rate) = output_stream(&spk, play.clone())?;
+    input.play().map_err(|e| e.to_string())?;
+    output.play().map_err(|e| e.to_string())?;
+    let muted = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+
+    // Microphone -> denoise -> Opus -> engine.
+    {
+        let (muted, stop, send) = (muted.clone(), stop.clone(), pipe.send.clone());
+        std::thread::spawn(move || {
+            let Ok(mut enc) = opus::Encoder::new(RATE, opus::Channels::Mono, opus::Application::Voip) else { return };
+            let _ = enc.set_bitrate(opus::Bitrate::Bits(28_000));
+            let _ = enc.set_inband_fec(true);
+            let _ = enc.set_packet_loss_perc(5);
+            let mut rs = Resampler::new(in_rate, RATE);
+            let mut denoise = nnnoiseless::DenoiseState::new();
+            let mut at48: Vec<f32> = vec![];
+            let mut clean: Vec<f32> = vec![];
+            let mut out = [0u8; 1500];
+            let mut dn_out = [0f32; nnnoiseless::DenoiseState::FRAME_SIZE];
+            while !stop.load(Ordering::Relaxed) {
+                std::thread::sleep(Duration::from_millis(10));
+                let raw: Vec<f32> = cap.lock().unwrap().drain(..).collect();
+                rs.run(&raw, &mut at48);
+                // RNNoise works on 480-sample frames in 16-bit range.
+                while at48.len() >= nnnoiseless::DenoiseState::FRAME_SIZE {
+                    let chunk: Vec<f32> = at48.drain(..nnnoiseless::DenoiseState::FRAME_SIZE).map(|x| x * 32767.0).collect();
+                    denoise.process_frame(&mut dn_out, &chunk);
+                    clean.extend(dn_out.iter().map(|x| x / 32767.0));
+                }
+                while clean.len() >= FRAME {
+                    let frame: Vec<f32> = clean.drain(..FRAME).collect();
+                    if muted.load(Ordering::Relaxed) {
+                        continue;
+                    }
+                    if let Ok(n) = enc.encode_float(&frame, &mut out) {
+                        if send.send(out[..n].to_vec()).is_err() {
+                            return; // call over
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    // Engine -> Opus -> speakers, in sequence order, concealing small gaps.
+    {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            let Ok(mut dec) = opus::Decoder::new(RATE, opus::Channels::Mono) else { return };
+            let mut rs = Resampler::new(RATE, out_rate);
+            let mut next: Option<u32> = None;
+            let mut pcm = vec![0f32; FRAME * 6];
+            let mut at_out: Vec<f32> = vec![];
+            let max = out_rate as usize * MAX_BUFFER_MS / 1000;
+            while !stop.load(Ordering::Relaxed) {
+                let (seq, frame) = match from_net.recv_timeout(Duration::from_millis(200)) {
+                    Ok(f) => f,
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(_) => return, // call over
+                };
+                let expected = next.unwrap_or(seq);
+                if seq < expected {
+                    continue; // late: already concealed
+                }
+                // A few frames lost: let Opus fill them in.
+                let missing = (seq - expected).min(3);
+                at_out.clear();
+                for _ in 0..missing {
+                    if let Ok(n) = dec.decode_float(&[], &mut pcm, false) {
+                        rs.run(&pcm[..n], &mut at_out);
+                    }
+                }
+                if let Ok(n) = dec.decode_float(&frame, &mut pcm, false) {
+                    rs.run(&pcm[..n], &mut at_out);
+                }
+                next = Some(seq.wrapping_add(1));
+                let mut r = play.lock().unwrap();
+                r.extend(at_out.iter());
+                if r.len() > max {
+                    let n = r.len() - max / 2;
+                    r.drain(..n);
+                }
+            }
+        });
+    }
+    Ok(Voice { _input: input, _output: output, muted, stop })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Resampler;
+
+    #[test]
+    fn resampler_keeps_length_and_shape() {
+        let mut r = Resampler::new(44_100, 48_000);
+        let mut out = vec![];
+        // 1 s of a slow ramp in 10 blocks
+        for b in 0..10 {
+            let block: Vec<f32> = (0..4410).map(|i| (b * 4410 + i) as f32 / 44_100.0).collect();
+            r.run(&block, &mut out);
+        }
+        assert!((out.len() as i32 - 48_000).abs() <= 2, "{}", out.len());
+        // monotonic ramp stays monotonic, and ends near 1.0
+        assert!(out.windows(2).all(|w| w[1] >= w[0]));
+        assert!((out.last().unwrap() - 1.0).abs() < 0.01);
+    }
+}

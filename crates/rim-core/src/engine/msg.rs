@@ -569,6 +569,7 @@ impl Engine {
                 }
                 self.emit_history(id);
             }
+            Body::Call(sig) => self.on_call_signal(id, device, sig),
             Body::Typing(t) => {
                 if t {
                     self.typing.insert(id.to_string(), Instant::now());
@@ -1251,6 +1252,7 @@ impl Engine {
                 self.notice(format!("{name} {what}."));
             }
             Body::PluginState { plugin, state, .. } => self.emit(Event::PluginState { plugin, state }),
+            Body::Call(sig) => self.on_own_call_signal(sig),
             Body::Receipt { ids } => {
                 for id in ids {
                     self.delivered("self", device, id, true);

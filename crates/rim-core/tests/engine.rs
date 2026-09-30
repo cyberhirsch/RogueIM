@@ -408,3 +408,50 @@ fn behind_two_routers_via_nostr() {
     a.stop();
     b.stop();
 }
+
+#[test]
+fn voice_call() {
+    use rim_core::CallState;
+    let a = Peer::start("alice", "pass-a");
+    let b = Peer::start("bob", "pass-b");
+    a.unlocked();
+    b.unlocked();
+    std::thread::sleep(Duration::from_millis(500));
+    let (bob_at_a, _) = befriend(&a, &b);
+    a.send(Command::CallStart { id: bob_at_a.clone() });
+    b.wait(20, "ringing", |e| match e {
+        Event::Call(v) if v.state == CallState::Ringing && v.name == "alice" => Some(()),
+        _ => None,
+    });
+    b.send(Command::CallAccept);
+    let pa = a.wait(20, "media at alice", |e| if let Event::CallMedia(p) = e { Some(p.clone()) } else { None });
+    let pb = b.wait(20, "media at bob", |e| if let Event::CallMedia(p) = e { Some(p.clone()) } else { None });
+    let (ra, rb) = (pa.recv.lock().unwrap().take().unwrap(), pb.recv.lock().unwrap().take().unwrap());
+    for i in 0..5u8 {
+        pa.send.send(vec![i, 1, 2, 3]).unwrap();
+        pb.send.send(vec![i, 9, 9]).unwrap();
+    }
+    let mut got_b = vec![];
+    let mut got_a = vec![];
+    let end = std::time::Instant::now() + Duration::from_secs(10);
+    while (got_a.len() < 5 || got_b.len() < 5) && std::time::Instant::now() < end {
+        while let Ok(f) = rb.try_recv() {
+            got_b.push(f);
+        }
+        while let Ok(f) = ra.try_recv() {
+            got_a.push(f);
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    got_b.sort();
+    got_a.sort();
+    assert_eq!(got_b, (0..5u8).map(|i| (i as u32, vec![i, 1, 2, 3])).collect::<Vec<_>>());
+    assert_eq!(got_a, (0..5u8).map(|i| (i as u32, vec![i, 9, 9])).collect::<Vec<_>>());
+    a.send(Command::CallHangup);
+    b.wait(20, "hung up", |e| match e {
+        Event::Call(v) if v.state == CallState::Ended && v.reason == "hung up" => Some(()),
+        _ => None,
+    });
+    a.stop();
+    b.stop();
+}

@@ -213,3 +213,17 @@ JSON lines over a local socket named in `RIM_PLUGIN_SOCKET`; see `crates/rim-plu
 * **Public helpers.** Unless disabled (`public_helpers`), devices connect to the public IPFS/libp2p bootstrap nodes.
   Their identify reply tells a device its outside QUIC address; if they offer circuit relay v2, a device reserves up
   to two circuits, so libp2p's own DCUtR hole punching also works. Helpers see IP addresses, never content.
+
+## 13. Voice calls (1:1)
+
+* Signalling is a `Body::Call(CallSignal)` inside the normal encrypted channel, sent only to connected devices:
+  `Invite{call, key}` (random 32-byte call key, base64) rings every connected device of the contact;
+  `Accept{call}` from the answering device; `Decline`, `Busy`, `Hangup`; and `Answered{call}` from the answering
+  device to its own sibling devices so they stop ringing. Unanswered calls end after 45 s.
+* Audio: Opus, 48 kHz mono, 20 ms frames, ~28 kbit/s with in-band FEC. Each frame travels as a
+  `VoiceReq{call, data}` on `/rim/voice/1` (request-response, the response is empty), where
+  `data = base64(nonce24 || XChaCha20-Poly1305(call key, seq_u32_le || opus))`. Frames from anyone but the answering
+  device, or for another call, are dropped. The receiver orders by `seq` and conceals up to three lost frames.
+* Calls need a connection to the device; the UI shows whether it is direct or relayed. A call ends 15 s after the
+  peer's connection is lost.
+

@@ -244,6 +244,7 @@ pub enum Body {
     Remote(RemoteCommand),
     /// The target device confirms it carried out a remote command.
     RemoteAck { action: RemoteAction, ts: i64 },
+    Call(CallSignal),
     /// Plugin state shared between own devices (e.g. the pomodoro timer).
     PluginState { plugin: String, state: String, updated: i64 },
 
@@ -379,6 +380,54 @@ pub struct ContactSync {
     pub auto_accept: Option<bool>,
     #[serde(default)]
     pub urgent_allowed: Option<bool>,
+}
+
+/// Voice call signalling (inside the encrypted channel).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum CallSignal {
+    /// Ring: `key` (base64, 32 bytes) seals the audio of this call.
+    Invite { call: String, key: String },
+    Accept { call: String },
+    Decline { call: String },
+    Busy { call: String },
+    Hangup { call: String },
+    /// To our own devices: this call was answered or declined elsewhere.
+    Answered { call: String },
+}
+
+/// One sealed audio frame of a call.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceReq {
+    pub call: String,
+    pub data: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct VoiceResp {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CallState {
+    /// We ring them.
+    Calling,
+    /// They ring us.
+    Ringing,
+    Active,
+    Ended,
+}
+
+#[derive(Debug, Clone)]
+pub struct CallView {
+    pub call: String,
+    pub contact: String,
+    pub name: String,
+    pub outgoing: bool,
+    pub state: CallState,
+    /// Why it ended ("declined", "no answer", ...).
+    pub reason: String,
+    /// Ringing since / active since (unix seconds).
+    pub since: i64,
+    /// Audio flows over a direct connection (not a relay).
+    pub direct: bool,
 }
 
 /// Short-lived, signed messages to one device via Nostr, for when no direct

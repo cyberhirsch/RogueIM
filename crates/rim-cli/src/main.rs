@@ -47,6 +47,7 @@ type Clients = Arc<Mutex<Vec<Box<dyn Write + Send>>>>;
 struct Opts {
     invite: bool,
     accept_all: bool,
+    answer_calls: bool,
     echo: bool,
     add: Option<String>,
     say: Option<String>,
@@ -60,7 +61,7 @@ struct Opts {
 
 fn main() {
     let mut cfg = EngineConfig { dir: PathBuf::from("./rim-cli-profile"), passphrase: "rim".into(), ..Default::default() };
-    let mut o = Opts { invite: false, accept_all: false, echo: false, add: None, say: None, control: None, api: None, allow: vec![], stdin_to: None, send_to: None, send_text: None };
+    let mut o = Opts { invite: false, accept_all: false, answer_calls: false, echo: false, add: None, say: None, control: None, api: None, allow: vec![], stdin_to: None, send_to: None, send_text: None };
     let mut args: Vec<String> = std::env::args().skip(1).collect();
     let one_shot_send = args.first().map(|a| a == "send").unwrap_or(false);
     if one_shot_send {
@@ -94,6 +95,7 @@ fn main() {
             "--link" => cfg.mode = StartMode::Link,
             "--invite" => o.invite = true,
             "--accept-all" => o.accept_all = true,
+            "--answer-calls" => o.answer_calls = true,
             "--echo" => o.echo = true,
             "--add" => o.add = it.next(),
             "--say" => o.say = it.next(),
@@ -185,6 +187,31 @@ fn main() {
                 }
                 for p in &n.peers {
                     println!("peer: {p}");
+                }
+            }
+            Event::Call(v) => {
+                println!("call with {}: {:?} {}", v.name, v.state, v.reason);
+                if o.answer_calls && v.state == rim_core::CallState::Ringing {
+                    h.send(Command::CallAccept);
+                }
+            }
+            // Echo test: every audio frame goes straight back to the caller.
+            Event::CallMedia(pipe) => {
+                if let Some(rx) = pipe.recv.lock().unwrap().take() {
+                    let pipe = pipe.clone();
+                    std::thread::spawn(move || {
+                        let mut n = 0u64;
+                        while let Ok((_, frame)) = rx.recv() {
+                            if pipe.send.send(frame).is_err() {
+                                break;
+                            }
+                            n += 1;
+                            if n % 250 == 0 {
+                                println!("echoed {n} frames");
+                            }
+                        }
+                        println!("echo ended after {n} frames");
+                    });
                 }
             }
             Event::Pending(list) => {

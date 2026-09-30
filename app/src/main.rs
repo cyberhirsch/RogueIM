@@ -7,6 +7,7 @@ mod desktop;
 mod dock;
 mod plugins;
 mod update;
+mod voice;
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -233,6 +234,9 @@ struct App {
     plugin_net: Vec<(String, String, String)>,
     my_os: String,
     my_laptop: bool,
+    call: Option<CallView>,
+    voice: Option<voice::Voice>,
+    call_muted: bool,
     update_rx: Option<Receiver<update::Progress>>,
     update_found: Option<update::Release>,
     /// The user started this check (so "up to date" and errors are shown).
@@ -403,6 +407,19 @@ fn header_for(app: &App, key: &str) -> Header {
     }
 }
 
+/// "", "calling", "ringing" or "active" for the chat with this key.
+fn call_state_for(a: &App, key: &str) -> &'static str {
+    match &a.call {
+        Some(c) if c.contact == key => match c.state {
+            CallState::Calling => "calling",
+            CallState::Ringing => "ringing",
+            CallState::Active => "active",
+            CallState::Ended => "",
+        },
+        _ => "",
+    }
+}
+
 fn apply_header_window(w: &ChatWindow, h: &Header) {
     w.set_name(h.name.clone().into());
     w.set_fp(h.fp.clone().into());
@@ -436,11 +453,13 @@ fn refresh_chat(app: &AppRc, key: &str) {
     let h = header_for(&a, key);
     if let Some(w) = a.chats.get(key) {
         apply_header_window(w, &h);
+        w.set_call_state(call_state_for(&a, key).into());
         w.set_lines(ModelRc::new(VecModel::from(lines.clone())));
     }
     if a.docked_chat.as_deref() == Some(key) {
         if let Some(m) = a.main.upgrade() {
             apply_header_docked(&m, &h);
+            m.set_dchat_call_state(call_state_for(&a, key).into());
             m.set_dchat_lines(ModelRc::new(VecModel::from(lines)));
         }
     }
@@ -621,6 +640,8 @@ fn open_chat(app: &AppRc, key: &str) {
         w.on_file_send(move || chat_file_send(&ap, &k));
         let ap = app.clone();
         w.on_file_action(move |act, f| chat_file_action(&ap, &act, &f));
+        let (ap, k) = (app.clone(), key.to_string());
+        w.on_call_toggle(move || call_toggle(&ap, &k));
         install_file_drop(app, w.window(), Some(key.to_string()));
         let weak = w.as_weak();
         w.on_drag(move |dx, dy| {
@@ -1337,6 +1358,20 @@ fn handle_event(app: &AppRc, ev: Event) {
                 app.borrow().host.send(&plugin, &ToPlugin::State { state: v });
             }
         }
+        Event::Call(v) => on_call(app, v),
+        Event::CallMedia(pipe) => {
+            match voice::start(pipe) {
+                Ok(v) => {
+                    let muted = app.borrow().call_muted;
+                    v.set_muted(muted);
+                    app.borrow_mut().voice = Some(v);
+                }
+                Err(e) => {
+                    notice(app, &format!("Call audio: {e}"));
+                    app.borrow().send(Command::CallHangup);
+                }
+            }
+        }
         Event::Locked => {
             // "Lock" from another device means: the passphrase is needed again.
             desktop::forget(&app.borrow().profile);
@@ -1668,6 +1703,9 @@ fn main() {
         plugin_net: vec![],
         my_os: String::new(),
         my_laptop: false,
+        call: None,
+        voice: None,
+        call_muted: false,
         update_rx: None,
         update_found: None,
         update_manual: false,
@@ -1732,6 +1770,8 @@ fn main() {
                 app.borrow_mut().update_rx = Some(update::start(auto));
             }
             if ticks % 2 == 0 {
+                refresh_call_ui(&app);
+                ring_tick(&app, ticks);
                 idle_tick(&app);
                 autohide_tick(&app);
                 tray_tick(&app);
@@ -2196,6 +2236,31 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
         }
         redock(&ap);
         notice(&ap, "Saved.");
+    });
+    let ap = app.clone();
+    main.on_call_accept(move || ap.borrow().send(Command::CallAccept));
+    let ap = app.clone();
+    main.on_call_decline(move || ap.borrow().send(Command::CallDecline));
+    let ap = app.clone();
+    main.on_call_hangup(move || ap.borrow().send(Command::CallHangup));
+    let ap = app.clone();
+    main.on_call_mute(move || {
+        {
+            let mut a = ap.borrow_mut();
+            a.call_muted = !a.call_muted;
+            let m = a.call_muted;
+            if let Some(v) = &a.voice {
+                v.set_muted(m);
+            }
+        }
+        refresh_call_ui(&ap);
+    });
+    let ap = app.clone();
+    main.on_dchat_call_toggle(move || {
+        let key = ap.borrow().docked_chat.clone();
+        if let Some(k) = key {
+            call_toggle(&ap, &k);
+        }
     });
     let ap = app.clone();
     main.on_update_check_now(move || {
@@ -2933,5 +2998,74 @@ fn poll_update(app: &AppRc) {
                 }
             }
         }
+    }
+}
+
+// ================================================================ voice calls
+
+fn call_toggle(app: &AppRc, key: &str) {
+    let state = call_state_for(&app.borrow(), key);
+    let a = app.borrow();
+    match state {
+        "" => a.send(Command::CallStart { id: key.to_string() }),
+        "ringing" => a.send(Command::CallAccept),
+        _ => a.send(Command::CallHangup),
+    }
+}
+
+fn on_call(app: &AppRc, v: CallView) {
+    let ended = v.state == CallState::Ended;
+    let ringing = v.state == CallState::Ringing;
+    let (name, reason, contact) = (v.name.clone(), v.reason.clone(), v.contact.clone());
+    {
+        let mut a = app.borrow_mut();
+        let was_ringing = a.call.as_ref().map(|c| c.state == CallState::Ringing).unwrap_or(false);
+        a.call = Some(v);
+        if ended {
+            a.voice = None;
+            a.call_muted = false;
+        }
+        if ringing && !was_ringing && a.settings.notify {
+            desktop::notify(&name, "is calling you");
+        }
+    }
+    if ringing {
+        // Bring the bar out so the call can be answered.
+        set_hidden(app, false);
+        set_collapsed(app, false);
+    }
+    if ended {
+        notice(app, &format!("Call with {name}: {reason}."));
+        app.borrow_mut().call = None;
+    }
+    refresh_call_ui(app);
+    refresh_chat(app, &contact);
+}
+
+fn refresh_call_ui(app: &AppRc) {
+    let a = app.borrow();
+    let Some(m) = a.main.upgrade() else { return };
+    let (state, text) = match &a.call {
+        Some(c) => {
+            let secs = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0) - c.since).max(0);
+            match c.state {
+                CallState::Calling => ("calling", format!("calling {}…", c.name)),
+                CallState::Ringing => ("ringing", format!("{} is calling", c.name)),
+                CallState::Active => ("active", format!("call with {}  {:02}:{:02}  ·  {}", c.name, secs / 60, secs % 60, if c.direct { "direct" } else { "via relay" })),
+                CallState::Ended => ("", String::new()),
+            }
+        }
+        None => ("", String::new()),
+    };
+    m.set_call_state(state.into());
+    m.set_call_text(text.into());
+    m.set_call_muted(a.call_muted);
+}
+
+/// Ring every 2 seconds while a call comes in (quietly in Occupied / DND).
+fn ring_tick(app: &AppRc, ticks: u64) {
+    let ringing = app.borrow().call.as_ref().map(|c| c.state == CallState::Ringing).unwrap_or(false);
+    if ringing && ticks % 4 == 0 && !busy(app) {
+        play_event(app, desktop::Sound::Urgent);
     }
 }

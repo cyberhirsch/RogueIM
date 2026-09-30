@@ -18,12 +18,14 @@ use crate::proto::*;
 
 pub const MSG_PROTOCOL: &str = "/rim/msg/2";
 pub const FILE_PROTOCOL: &str = "/rim/file/1";
+pub const VOICE_PROTOCOL: &str = "/rim/voice/1";
 pub const KAD_PROTOCOL: &str = "/rim/kad/1.0.0";
 
 #[derive(NetworkBehaviour)]
 pub struct Behaviour {
     pub rr: request_response::json::Behaviour<WireReq, WireResp>,
     pub file: request_response::json::Behaviour<ChunkReq, ChunkResp>,
+    pub voice: request_response::json::Behaviour<VoiceReq, VoiceResp>,
     pub mdns: Toggle<mdns::tokio::Behaviour>,
     pub identify: identify::Behaviour,
     pub ping: ping::Behaviour,
@@ -62,6 +64,10 @@ pub fn build_swarm(device: Keypair, opts: NetOpts) -> Result<Swarm<Behaviour>> {
                     .with_request_timeout(Duration::from_secs(30))
                     .with_max_concurrent_streams(64),
             );
+            let voice = request_response::json::Behaviour::new(
+                [(StreamProtocol::new(VOICE_PROTOCOL), ProtocolSupport::Full)],
+                request_response::Config::default().with_request_timeout(Duration::from_secs(4)).with_max_concurrent_streams(512),
+            );
             let mdns = if opts.mdns { Some(mdns::tokio::Behaviour::new(mdns::Config::default(), peer)?) } else { None };
             let mut kcfg = kad::Config::new(StreamProtocol::new(KAD_PROTOCOL));
             kcfg.set_record_ttl(Some(Duration::from_secs(3 * 24 * 3600)));
@@ -70,6 +76,7 @@ pub fn build_swarm(device: Keypair, opts: NetOpts) -> Result<Swarm<Behaviour>> {
             Ok(Behaviour {
                 rr,
                 file,
+                voice,
                 mdns: mdns.into(),
                 identify: identify::Behaviour::new(identify::Config::new("/rim/id/2".into(), key.public()).with_agent_version(format!("rogueim/{}", env!("CARGO_PKG_VERSION")))),
                 ping: ping::Behaviour::new(ping::Config::new()),
@@ -317,6 +324,7 @@ impl Engine {
             SwarmEvent::Behaviour(BehaviourEvent::Mdns(_)) => {}
             SwarmEvent::Behaviour(BehaviourEvent::Rr(ev)) => self.on_rr(ev),
             SwarmEvent::Behaviour(BehaviourEvent::File(ev)) => self.on_file_rr(ev),
+            SwarmEvent::Behaviour(BehaviourEvent::Voice(ev)) => self.on_voice_rr(ev),
             SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { peer_id, info, .. })) => {
                 let hop = info.protocols.iter().any(|p| p.as_ref() == "/libp2p/circuit/relay/0.2.0/hop");
                 // How the internet sees us, as reported by a public node over QUIC

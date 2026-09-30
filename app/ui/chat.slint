@@ -370,6 +370,9 @@ export component ChatWindow inherits Window {
     in property <bool> is-max;
     in property <bool> can-task;
     in-out property <bool> pinned;
+    // "", "calling", "ringing", "active": the call with this contact
+    in property <string> call-state;
+    callback call-toggle();
 
     callback send(string, bool, string);
     callback typed();
@@ -413,6 +416,7 @@ export component ChatWindow inherits Window {
         drag(dx, dy) => { root.drag(dx, dy); }
         header-double-clicked => { root.toggle-maximize(); }
 
+        if root.mode == "contact": RButton { text: root.call-state == "" ? "call" : "hang up"; height: 18px; tone: root.call-state == "" ? Theme.fg : Theme.red; tip: root.call-state == "" ? "voice call (needs a direct connection; headphones recommended)" : "end the call"; clicked => { root.call-toggle(); } }
         TButton { glyph: "*"; active: root.pinned; tip: root.pinned ? "pinned: stays on top (click to unpin)" : "pin: keep this chat on top"; clicked => { root.pinned = !root.pinned; } }
         TButton { glyph: "v"; tip: "dock into the bar"; clicked => { root.dock(); } }
         TButton { glyph: "_"; tip: "minimize"; clicked => { root.minimize(); } }
