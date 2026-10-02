@@ -19,7 +19,13 @@ each event can use any built-in sound or your own file (wav, mp3, ogg, flac).
 
 Windows: run `RogueIM-windows-x64-setup.exe` (installs for your user, no admin rights; Windows SmartScreen may ask once because the installer is not code-signed). The `.zip` is the portable version.
 
-macOS: open the `.dmg` and drag RogueIM to Applications. Everything, including `rim-cli`, is inside the app. The app is not notarized (no Apple developer
+macOS: open the `.dmg` and drag RogueIM to Applications. Everything, including `rim-cli`, is inside the app.
+Without the "unidentified developer" warning, install from the Terminal instead (the download is checked
+against the release's checksums):
+
+```
+curl -fsSL https://raw.githubusercontent.com/cyberhirsch/RogueIM/main/deploy/macos/install.sh | sh
+``` The app is not notarized (no Apple developer
 account), so the first start is blocked. Open System Settings → Privacy & Security and click "Open Anyway"
 (on macOS 14 and older, right-click the app and choose Open). The player gadget controls players other than
 Music and Spotify through the media keys; that needs RogueIM under Privacy & Security → Accessibility.
