@@ -61,7 +61,7 @@ fn archive_name() -> Option<&'static str> {
     if cfg!(windows) {
         Some("RogueIM-windows-x64.zip")
     } else if cfg!(target_os = "macos") {
-        Some("RogueIM-macos-universal.tar.gz")
+        Some("RogueIM-macos-universal.dmg")
     } else if cfg!(all(target_os = "linux", target_arch = "x86_64")) {
         Some("RogueIM-linux-x64.tar.gz")
     } else if cfg!(all(target_os = "linux", target_arch = "aarch64")) {
@@ -139,6 +139,9 @@ fn verify(archive: &[u8], name: &str, sums: &[u8], sig: &[u8]) -> Result<(), Str
 fn unpack(name: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     let strip = |p: &str| p.split_once('/').map(|(_, rest)| rest.to_string()).unwrap_or_default();
     let mut out = vec![];
+    if name.ends_with(".dmg") {
+        return unpack_dmg(data);
+    }
     if name.ends_with(".zip") {
         let mut z = zip::ZipArchive::new(std::io::Cursor::new(data)).map_err(|e| e.to_string())?;
         for i in 0..z.len() {
@@ -167,6 +170,33 @@ fn unpack(name: &str, data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
     // Only plain relative paths: nothing may escape the install folder.
     out.retain(|(p, _)| !p.is_empty() && !p.starts_with('/') && !p.split('/').any(|c| c == ".." || c.contains(':')));
     Ok(out)
+}
+
+/// The programs inside RogueIM.app on a disk image (macOS only).
+#[cfg(target_os = "macos")]
+fn unpack_dmg(data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    let dir = std::env::temp_dir().join(format!("rogueim-update-{}", std::process::id()));
+    let _ = std::fs::create_dir_all(&dir);
+    let image = dir.join("update.dmg");
+    let mount = dir.join("mnt");
+    std::fs::write(&image, data).map_err(|e| e.to_string())?;
+    let _ = std::fs::create_dir_all(&mount);
+    let ok = std::process::Command::new("hdiutil").arg("attach").arg("-nobrowse").arg("-readonly").arg("-mountpoint").arg(&mount).arg(&image).status().map(|s| s.success()).unwrap_or(false);
+    if !ok {
+        return Err("could not open the disk image".into());
+    }
+    let macos = mount.join("RogueIM.app/Contents/MacOS");
+    let files: Result<Vec<(String, Vec<u8>)>, String> = std::fs::read_dir(&macos)
+        .map_err(|e| e.to_string())
+        .and_then(|rd| rd.flatten().map(|e| Ok((e.file_name().to_string_lossy().to_string(), std::fs::read(e.path()).map_err(|e| e.to_string())?))).collect());
+    let _ = std::process::Command::new("hdiutil").arg("detach").arg(&mount).arg("-quiet").status();
+    let _ = std::fs::remove_dir_all(&dir);
+    files
+}
+
+#[cfg(not(target_os = "macos"))]
+fn unpack_dmg(_data: &[u8]) -> Result<Vec<(String, Vec<u8>)>, String> {
+    Err("disk images are for macOS".into())
 }
 
 /// Where the running program lives, and (macOS) the app bundle around it.

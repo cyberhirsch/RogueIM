@@ -85,7 +85,21 @@ jobs:
           "target/release/rogueim$ext" --export-sounds "dist/$d/sounds"
           cp README.md LICENSE "dist/$d/"
           cd dist
-          if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$d.zip" "$d" > /dev/null; else tar czf "$d.tar.gz" "$d"; fi
+          # macOS ships as a single .dmg (next step), the others as archives.
+          if [ "$RUNNER_OS" = "Windows" ]; then 7z a "$d.zip" "$d" > /dev/null; elif [ "$RUNNER_OS" = "Linux" ]; then tar czf "$d.tar.gz" "$d"; fi
+
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $version = (Select-String -Path app/Cargo.toml -Pattern '^version = "(.+)"' | Select-Object -First 1).Matches[0].Groups[1].Value
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) { choco install innosetup -y --no-progress | Out-Null }
+          $src = (Resolve-Path "dist/RogueIM-${{ matrix.name }}").Path
+          $out = (Resolve-Path "dist").Path
+          & $iscc "/DAppVersion=$version" "/DSourceDir=$src" "/DOutputDir=$out" deploy/windows/rogueim.iss
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Get-ChildItem dist/*setup.exe
 
       - name: macOS app bundle and disk image
         if: runner.os == 'macOS'
@@ -93,7 +107,9 @@ jobs:
           version=$(grep -m1 '^version' app/Cargo.toml | cut -d'"' -f2)
           app="dist/dmg/RogueIM.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
-          for b in rogueim rim-plugin-pomodoro rim-plugin-todo rim-plugin-player; do cp "target/release/$b" "$app/Contents/MacOS/"; done
+          # Everything lives inside the app: programs, plugins, the CLI, docs.
+          for b in rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player; do cp "target/release/$b" "$app/Contents/MacOS/"; done
+          cp README.md LICENSE "$app/Contents/Resources/"
           sed "s/@VERSION@/$version/" deploy/macos/Info.plist > "$app/Contents/Info.plist"
           mkdir -p icon.iconset
           for s in 16 32 128 256 512; do
@@ -105,8 +121,6 @@ jobs:
           for b in "$app"/Contents/MacOS/*; do codesign --force --sign - "$b"; done
           codesign --force --sign - "$app"
           codesign --verify --strict --verbose=2 "$app"
-          cp target/release/rim-cli README.md LICENSE dist/dmg/
-          target/release/rogueim --export-sounds dist/dmg/sounds
           ln -s /Applications dist/dmg/Applications
           hdiutil create -volname RogueIM -srcfolder dist/dmg -ov -format UDZO "dist/RogueIM-${{ matrix.name }}.dmg"
 
@@ -122,6 +136,7 @@ jobs:
           name: RogueIM-${{ matrix.name }}
           path: |
             dist/RogueIM-${{ matrix.name }}.*
+            dist/*setup.exe
             dist/*.deb
 
   release:
