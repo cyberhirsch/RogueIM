@@ -1647,6 +1647,7 @@ fn main() {
     let main = MainWindow::new().expect("main window");
     apply_theme(&main.global::<Theme>(), palette(&settings.theme));
     main.set_theme_name(settings.theme.clone().into());
+    main.set_app_version(env!("CARGO_PKG_VERSION").into());
     let names: Vec<SharedString> = THEMES.iter().map(|p| p.name.into()).collect();
     main.set_theme_names(ModelRc::new(VecModel::from(names)));
     main.set_split(settings.split);

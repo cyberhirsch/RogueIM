@@ -101,6 +101,7 @@ export component MainWindow inherits Window {
 
     in property <string> my-nick;
     in property <string> my-fp;
+    in property <string> app-version;
     in property <string> my-os;
     in property <string> my-device;
     in property <string> my-status;
@@ -1197,7 +1198,7 @@ export component MainWindow inherits Window {
 
         // footer
         Text { text: root.notice; color: Theme.accent; font-size: Theme.small; wrap: word-wrap; visible: root.notice != ""; vertical-stretch: 0; }
-        Text { text: "fp " + root.my-fp; color: Theme.faint; font-size: 9px; wrap: word-wrap; vertical-stretch: 0; }
+        Text { text: "v" + root.app-version + "  ·  fp " + root.my-fp; color: Theme.faint; font-size: 9px; wrap: word-wrap; vertical-stretch: 0; }
     }
 
     // ---------------------------------------------------------------- width handle on the inner edge
