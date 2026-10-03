@@ -26,7 +26,9 @@ jobs:
             libpipewire-0.3-dev libclang-dev libxcb1-dev libxcb-randr0-dev libxcb-shm0-dev libgbm-dev libegl-dev libdrm-dev libwayland-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo
+      # Each engine test runs two or three full network nodes; the small CI runners
+      # get flaky timeouts when all of them run at once.
+      - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo -- --test-threads=2
       - run: cargo build -p rogueim -p rim-cli
 
   build:
