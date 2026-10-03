@@ -45,6 +45,13 @@ impl Drop for Share {
     }
 }
 
+/// Position and size of monitor `index` in physical pixels.
+pub fn monitor_rect(index: usize) -> Option<(i32, i32, u32, u32)> {
+    let mons = xcap::Monitor::all().ok()?;
+    let m = mons.get(index).or_else(|| mons.first())?;
+    Some((m.x().ok()?, m.y().ok()?, m.width().ok()?, m.height().ok()?))
+}
+
 /// The monitors we can share: (name, is primary).
 pub fn monitors() -> Vec<(String, bool)> {
     xcap::Monitor::all()

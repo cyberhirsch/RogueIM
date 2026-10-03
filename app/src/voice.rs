@@ -86,11 +86,57 @@ pub struct Voice {
     _output: cpal::Stream,
     muted: Arc<AtomicBool>,
     stop: Arc<AtomicBool>,
+    /// Playback volume in percent.
+    volume: Arc<std::sync::atomic::AtomicU32>,
 }
 
 impl Voice {
     pub fn set_muted(&self, m: bool) {
         self.muted.store(m, Ordering::Relaxed);
+    }
+
+    pub fn set_volume(&self, percent: u32) {
+        self.volume.store(percent, Ordering::Relaxed);
+    }
+}
+
+/// Names of the microphones and speakers the system offers.
+pub fn devices() -> (Vec<String>, Vec<String>) {
+    let host = cpal::default_host();
+    let name = |d: cpal::Device| d.description().ok().map(|x| x.name().to_string());
+    let ins = host.input_devices().map(|v| v.filter_map(name).collect()).unwrap_or_default();
+    let outs = host.output_devices().map(|v| v.filter_map(name).collect()).unwrap_or_default();
+    (ins, outs)
+}
+
+fn pick(list: Option<impl Iterator<Item = cpal::Device>>, wanted: &str) -> Option<cpal::Device> {
+    if wanted.is_empty() {
+        return None;
+    }
+    list?.find(|d| d.description().map(|x| x.name() == wanted).unwrap_or(false))
+}
+
+/// Automatic gain for the microphone: brings quiet voices up to a steady
+/// speaking level (quickly down, slowly up, never above 12x), then a soft
+/// limiter so peaks do not clip.
+struct Agc {
+    gain: f32,
+}
+
+impl Agc {
+    const TARGET: f32 = 0.12;
+    const FLOOR: f32 = 0.004;
+
+    fn run(&mut self, frame: &mut [f32]) {
+        let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
+        if rms > Self::FLOOR {
+            let want = (Self::TARGET / rms).clamp(1.0, 12.0);
+            let rate = if want < self.gain { 0.5 } else { 0.05 };
+            self.gain += (want - self.gain) * rate;
+        }
+        for x in frame.iter_mut() {
+            *x = (*x * self.gain).tanh();
+        }
     }
 }
 
@@ -181,11 +227,14 @@ fn output_stream(dev: &cpal::Device, ring: Ring, reference: Ring) -> Result<(cpa
 }
 
 /// Start audio for an active call.
-pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
+/// Start audio for an active call with the chosen devices ("" = system default)
+/// and playback volume in percent.
+pub fn start(pipe: Arc<MediaPipe>, mic_name: &str, spk_name: &str, volume_percent: u32) -> Result<Voice, String> {
     let from_net = pipe.recv.lock().unwrap().take().ok_or("audio already taken")?;
     let host = cpal::default_host();
-    let mic = host.default_input_device().ok_or("no microphone found")?;
-    let spk = host.default_output_device().ok_or("no speakers found")?;
+    let mic = pick(host.input_devices().ok(), mic_name).or_else(|| host.default_input_device()).ok_or("no microphone found")?;
+    let spk = pick(host.output_devices().ok(), spk_name).or_else(|| host.default_output_device()).ok_or("no speakers found")?;
+    let volume = Arc::new(std::sync::atomic::AtomicU32::new(volume_percent));
     let cap: Ring = Default::default();
     let play: Ring = Default::default();
     let reference: Ring = Default::default();
@@ -207,6 +256,7 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
             let mut rs = Resampler::new(in_rate, RATE);
             let mut ref_rs = Resampler::new(out_rate, RATE);
             let echo = EchoCanceller::new(true);
+            let mut agc = Agc { gain: 3.0 };
             let mut far: VecDeque<f32> = VecDeque::new();
             let mut denoise = nnnoiseless::DenoiseState::new();
             let mut at48: Vec<f32> = vec![];
@@ -235,10 +285,11 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
                     clean.extend(dn_out.iter().map(|x| x / 32767.0));
                 }
                 while clean.len() >= FRAME {
-                    let frame: Vec<f32> = clean.drain(..FRAME).collect();
+                    let mut frame: Vec<f32> = clean.drain(..FRAME).collect();
                     if muted.load(Ordering::Relaxed) {
                         continue;
                     }
+                    agc.run(&mut frame);
                     if let Ok(n) = enc.encode_float(&frame, &mut out) {
                         if send.send(out[..n].to_vec()).is_err() {
                             return; // call over
@@ -252,6 +303,7 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
     // Engine -> Opus -> speakers, in sequence order, concealing small gaps.
     {
         let stop = stop.clone();
+        let vol = volume.clone();
         std::thread::spawn(move || {
             let Ok(mut dec) = opus::Decoder::new(RATE, opus::Channels::Mono) else { return };
             let mut rs = Resampler::new(RATE, out_rate);
@@ -281,8 +333,9 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
                     rs.run(&pcm[..n], &mut at_out);
                 }
                 next = Some(seq.wrapping_add(1));
+                let v = vol.load(Ordering::Relaxed) as f32 / 100.0;
                 let mut r = play.lock().unwrap();
-                r.extend(at_out.iter());
+                r.extend(at_out.iter().map(|x| (x * v).clamp(-1.0, 1.0)));
                 if r.len() > max {
                     let n = r.len() - max / 2;
                     r.drain(..n);
@@ -290,7 +343,7 @@ pub fn start(pipe: Arc<MediaPipe>) -> Result<Voice, String> {
             }
         });
     }
-    Ok(Voice { _input: input, _output: output, muted, stop })
+    Ok(Voice { _input: input, _output: output, muted, stop, volume })
 }
 
 #[cfg(test)]

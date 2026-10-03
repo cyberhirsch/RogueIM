@@ -145,6 +145,8 @@ pub enum Command {
     ScreenWantKey,
     // messaging
     SendText { id: String, body: String, reply_to: Option<u64>, urgent: bool },
+    /// A picture (JPEG bytes, at most about 700 KB) with optional text; id "self" = note to self.
+    SendImage { id: String, jpeg: Vec<u8>, text: String },
     EditText { id: String, msg: u64, body: String },
     DeleteText { id: String, msg: u64 },
     Typing { id: String, typing: bool },
@@ -691,6 +693,18 @@ impl Engine {
                 self.notice("The bandwidth limit applies after a restart.");
             }
             Command::SendText { id, body, reply_to, urgent } => self.send_text(&id, body, reply_to, urgent)?,
+            Command::SendImage { id, jpeg, text } => {
+                // The request-response codec takes at most 1 MiB per message.
+                if jpeg.len() > 700 * 1024 {
+                    anyhow::bail!("the picture is too large ({} KB, at most 700 KB)", jpeg.len() / 1024);
+                }
+                let b = crate::identity::b64(&jpeg);
+                if id == "self" {
+                    self.send_note_image(text, Some(b));
+                } else {
+                    self.send_message(&id, text, None, false, Some(b))?;
+                }
+            }
             Command::EditText { id, msg, body } => self.edit_text(&id, msg, body)?,
             Command::DeleteText { id, msg } => self.delete_text(&id, msg)?,
             Command::Typing { id, typing } => self.send_typing(&id, typing),

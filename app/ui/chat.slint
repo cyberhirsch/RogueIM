@@ -20,6 +20,8 @@ export struct ChatLine {
     file-progress: float,
     // offered, waiting, transferring, paused, done, declined, failed, nodirect
     file-state: string,
+    has-image: bool,
+    image: image,
 }
 
 // Square glyph button for the title bar.
@@ -91,6 +93,8 @@ export component ChatPane inherits Rectangle {
     callback file-action(string, string);
     callback drag(length, length);
     callback header-double-clicked();
+    // Ctrl+V: true if the clipboard held a picture (then it was sent)
+    callback paste-image(string) -> bool;
 
     property <string> selected-id;
     property <string> editing-id;
@@ -190,7 +194,22 @@ export component ChatPane inherits Rectangle {
                             overflow: elide;
                         }
                         if l.deleted: Text { text: "(deleted)"; color: Theme.faint; font-size: 11px; font-italic: true; }
-                        if !l.deleted && l.file-id == "" && l.id != root.editing-id: TextInput {
+                        // pasted picture: inline when there is room, else an icon that opens it
+                        if !l.deleted && l.has-image && root.width >= 300px: Image {
+                            source: l.image;
+                            height: min(240px, (root.width - 24px) * l.image.height / max(1, l.image.width));
+                            image-fit: contain;
+                            horizontal-alignment: left;
+                            TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.line-action("image", l.id); }
+                            }
+                        }
+                        if !l.deleted && l.has-image && root.width < 300px: LinkText {
+                            text: "[▣ image]";
+                            clicked => { root.line-action("image", l.id); }
+                        }
+                        if !l.deleted && l.file-id == "" && l.id != root.editing-id && (l.text != "" || !l.has-image): TextInput {
                             text: l.text;
                             read-only: true;
                             single-line: false;
@@ -312,19 +331,52 @@ export component ChatPane inherits Rectangle {
                 height: 24px;
                 clicked => { root.urgent = !root.urgent; }
             }
-            input := RInput {
-                border-width: 0px;
+            // Wraps and grows with the text (up to 8 lines). Enter sends;
+            // Ctrl+V with a picture in the clipboard sends the picture.
+            Rectangle {
                 horizontal-stretch: 1;
-                placeholder: root.authorized ? (root.urgent ? "urgent message…" : "message…") : "waiting for authorization…";
-                edited => { root.typed(); }
-                accepted(t) => {
-                    if (root.authorized && t != "") {
-                        root.send(t, root.urgent, root.reply-id);
-                        input.text = "";
-                        root.urgent = false;
-                        root.reply-id = "";
-                        root.reply-text = "";
+                height: min(132px, max(24px, input.preferred-height + 8px));
+                background: Theme.panel;
+                FocusScope {
+                    capture-key-pressed(e) => {
+                        if (e.text == Key.Return) {
+                            if (root.authorized && input.text != "") {
+                                root.send(input.text, root.urgent, root.reply-id);
+                                input.text = "";
+                                root.urgent = false;
+                                root.reply-id = "";
+                                root.reply-text = "";
+                            }
+                            return accept;
+                        }
+                        if ((e.modifiers.control || e.modifiers.meta) && (e.text == "v" || e.text == "V")) {
+                            if (root.authorized && root.paste-image(input.text)) {
+                                input.text = "";
+                                return accept;
+                            }
+                        }
+                        return reject;
                     }
+                    input := TextInput {
+                        x: 5px;
+                        y: 4px;
+                        width: parent.width - 10px;
+                        height: parent.height - 8px;
+                        single-line: false;
+                        wrap: word-wrap;
+                        color: Theme.fg;
+                        font-size: Theme.fs;
+                        selection-background-color: Theme.accent;
+                        selection-foreground-color: Theme.on-accent;
+                        edited => { root.typed(); }
+                    }
+                }
+                if input.text == "": Text {
+                    x: 5px;
+                    y: 4px;
+                    text: root.authorized ? (root.urgent ? "urgent message…" : "message… (Ctrl+V pastes a picture)") : "waiting for authorization…";
+                    color: Theme.faint;
+                    font-size: Theme.fs;
                 }
             }
             if root.mode != "group": TButton {
@@ -380,6 +432,7 @@ export component ChatWindow inherits Window {
     callback edit-commit(string, string);
     callback file-send();
     callback file-action(string, string);
+    callback paste-image(string) -> bool;
     callback drag(length, length);
     callback resize(length, length);
     callback minimize();
@@ -413,6 +466,7 @@ export component ChatWindow inherits Window {
         edit-commit(i, t) => { root.edit-commit(i, t); }
         file-send => { root.file-send(); }
         file-action(a, i) => { root.file-action(a, i); }
+        paste-image(t) => { return root.paste-image(t); }
         drag(dx, dy) => { root.drag(dx, dy); }
         header-double-clicked => { root.toggle-maximize(); }
 
@@ -444,4 +498,21 @@ export component ChatWindow inherits Window {
     init => { pane.focus-input(); }
 
     TipLayer { }
+}
+
+// A pasted picture at full size.
+export component ImageWindow inherits Window {
+    title: "RogueIM · picture from " + root.who;
+    icon: @image-url("../assets/icon.png");
+    background: #000000;
+    in property <string> who;
+    in property <image> picture;
+    preferred-width: min(1200px, max(240px, root.picture.width * 1px));
+    preferred-height: min(800px, max(160px, root.picture.height * 1px));
+    Image {
+        width: parent.width;
+        height: parent.height;
+        source: root.picture;
+        image-fit: contain;
+    }
 }

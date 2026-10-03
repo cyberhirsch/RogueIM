@@ -2,8 +2,8 @@ import { ListView, ScrollView } from "std-widgets.slint";
 import { Theme, RButton, RInput, OsIcon, RCheck, RTab, RCaption, RArea, RMenuItem, Tip, TipLayer } from "theme.slint";
 import { ChatPane, ChatLine, TButton } from "chat.slint";
 import { LoginScreen } from "login.slint";
-export { ChatWindow, ChatLine } from "chat.slint";
-export { ScreenWindow } from "screen.slint";
+export { ChatWindow, ChatLine, ImageWindow } from "chat.slint";
+export { ScreenWindow, ShareEdge } from "screen.slint";
 export { Theme } from "theme.slint";
 
 export struct ContactRow {
@@ -168,6 +168,9 @@ export component MainWindow inherits Window {
     in-out property <bool> s-typing: true;
     in-out property <bool> s-notify-online: true;
     in property <[SoundRow]> sound-rows;
+    in property <string> s-audio-in;
+    in property <string> s-audio-out;
+    in property <int> s-call-volume: 100;
     in-out property <string> s-hk-toggle;
     in-out property <string> s-hk-reply;
     in-out property <string> s-hk-notes;
@@ -304,6 +307,7 @@ export component MainWindow inherits Window {
     callback dchat-edit(string, string);
     callback dchat-file-send();
     callback dchat-file-action(string, string);
+    callback dchat-paste-image(string) -> bool;
     callback dchat-undock();
     callback dchat-close();
     callback split-changed(float);
@@ -330,6 +334,8 @@ export component MainWindow inherits Window {
     callback call-monitor-pick(int);
     callback dchat-call-toggle();
     callback sound-toggle(int, bool);
+    callback audio-cycle(string, int);
+    callback audio-volume(int);
     callback sound-cycle(int, int);
     callback sound-pick(int);
     callback sound-play(int);
@@ -782,6 +788,28 @@ export component MainWindow inherits Window {
                         RCaption { text: "< > built-in sounds · … your own file (wav, mp3, ogg, flac; up to 2 MB) · ▸ listen"; wrap: word-wrap; }
                     }
                     RCaption { text: "Occupied and DND silence everything except urgent messages."; wrap: word-wrap; }
+                    RCaption { text: "calls"; }
+                    HorizontalLayout {
+                        spacing: 2px;
+                        RCaption { text: "mic"; width: 46px; vertical-alignment: center; }
+                        RButton { text: "<"; tip: "previous microphone"; clicked => { root.audio-cycle("in", -1); } }
+                        Text { text: root.s-audio-in; color: Theme.fg; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                        RButton { text: ">"; tip: "next microphone"; clicked => { root.audio-cycle("in", 1); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 2px;
+                        RCaption { text: "speaker"; width: 46px; vertical-alignment: center; }
+                        RButton { text: "<"; tip: "previous speakers / headphones"; clicked => { root.audio-cycle("out", -1); } }
+                        Text { text: root.s-audio-out; color: Theme.fg; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                        RButton { text: ">"; tip: "next speakers / headphones"; clicked => { root.audio-cycle("out", 1); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 2px;
+                        alignment: start;
+                        RCaption { text: "volume"; width: 46px; vertical-alignment: center; }
+                        for v in [50, 100, 150, 200, 300]: RTab { text: v + "%"; active: root.s-call-volume == v; clicked => { root.audio-volume(v); } }
+                    }
+                    RCaption { text: "Your microphone level is adjusted automatically."; wrap: word-wrap; }
                 }
 
                 if root.settings-tab == 7: VerticalLayout {
@@ -1114,6 +1142,7 @@ export component MainWindow inherits Window {
                 edit-commit(i, t) => { root.dchat-edit(i, t); }
                 file-send => { root.dchat-file-send(); }
                 file-action(a, i) => { root.dchat-file-action(a, i); }
+                paste-image(t) => { return root.dchat-paste-image(t); }
                 if root.dchat-mode == "contact": RButton { text: root.dchat-call-state == "" ? "call" : "hang up"; height: 18px; tone: root.dchat-call-state == "" ? Theme.fg : Theme.red; tip: root.dchat-call-state == "" ? "voice call (needs a direct connection; headphones recommended)" : "end the call"; clicked => { root.dchat-call-toggle(); } }
                 TButton { glyph: "^"; tip: "open in its own window"; clicked => { root.dchat-undock(); } }
                 TButton { glyph: "x"; danger: true; tip: "close this chat"; clicked => { root.dchat-close(); } }

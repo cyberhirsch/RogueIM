@@ -62,6 +62,10 @@ struct Settings {
     snd_online: bool,
     snd_auth: bool,
     snd_file: bool,
+    /// Call audio devices by name ("" = system default) and playback volume in percent.
+    audio_in: String,
+    audio_out: String,
+    call_volume: u32,
     /// Per event (message, urgent, online, auth, file): a built-in sound name or "file:<path>".
     sound_map: Vec<String>,
     hotkeys: Vec<String>,
@@ -98,6 +102,9 @@ impl Default for Settings {
             snd_online: true,
             snd_auth: true,
             snd_file: true,
+            audio_in: String::new(),
+            audio_out: String::new(),
+            call_volume: 100,
             sound_map: desktop::Sound::ALL.iter().map(|s| s.name().to_string()).collect(),
             hotkeys: desktop::DEFAULT_HOTKEYS.iter().map(|s| s.to_string()).collect(),
             layout_updated: 0,
@@ -238,6 +245,15 @@ struct App {
     my_laptop: bool,
     call: Option<CallView>,
     voice: Option<voice::Voice>,
+    /// The yellow frame around the monitor being shared.
+    share_frame: Vec<ShareEdge>,
+    /// Decoded pictures by message id.
+    images: HashMap<u64, slint::Image>,
+    image_windows: Vec<ImageWindow>,
+    /// Chat line models, updated row by row (replacing them makes the chat flicker).
+    chat_models: HashMap<String, Rc<VecModel<ChatLine>>>,
+    dock_model: Rc<VecModel<ChatLine>>,
+    dock_model_key: String,
     call_muted: bool,
     share: Option<screen::Share>,
     share_monitor: usize,
@@ -329,6 +345,32 @@ fn chat_line(app: &App, l: &LineView) -> ChatLine {
         file_size: f.as_ref().map(|f| human_size(f.size)).unwrap_or_default().into(),
         file_progress: f.as_ref().map(|f| if f.size == 0 { 1.0 } else { f.done as f32 / f.size as f32 }).unwrap_or(0.0),
         file_state: f.as_ref().map(|f| file_state(f.state)).unwrap_or("").into(),
+        has_image: l.image.is_some(),
+        image: app.images.get(&l.id).cloned().unwrap_or_default(),
+    }
+}
+
+/// A base64 JPEG/PNG from a message as a picture for the UI.
+fn decode_picture(b64: &str) -> Option<slint::Image> {
+    let bytes = rim_core::identity::unb64(b64).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height());
+    Some(slint::Image::from_rgba8(buf))
+}
+
+/// Replace only the rows that changed (rebuilding the list makes it flicker).
+fn sync_lines(model: &VecModel<ChatLine>, lines: Vec<ChatLine>) {
+    for (i, l) in lines.iter().enumerate() {
+        if i < model.row_count() {
+            if model.row_data(i).as_ref() != Some(l) {
+                model.set_row_data(i, l.clone());
+            }
+        } else {
+            model.push(l.clone());
+        }
+    }
+    while model.row_count() > lines.len() {
+        model.remove(model.row_count() - 1);
     }
 }
 
@@ -454,19 +496,45 @@ fn apply_header_docked(m: &MainWindow, h: &Header) {
 }
 
 fn refresh_chat(app: &AppRc, key: &str) {
+    {
+        // Decode new pictures once.
+        let mut a = app.borrow_mut();
+        let todo: Vec<(u64, String)> = a.histories.get(key).map(|v| v.iter().filter(|l| !a.images.contains_key(&l.id)).filter_map(|l| l.image.clone().map(|i| (l.id, i))).collect()).unwrap_or_default();
+        for (id, b64) in todo {
+            if let Some(img) = decode_picture(&b64) {
+                a.images.insert(id, img);
+            }
+        }
+        // A model per chat window, set once.
+        if a.chats.contains_key(key) && !a.chat_models.contains_key(key) {
+            let model = Rc::new(VecModel::<ChatLine>::default());
+            if let Some(w) = a.chats.get(key) {
+                w.set_lines(ModelRc::from(model.clone()));
+            }
+            a.chat_models.insert(key.to_string(), model);
+        }
+    }
     let a = app.borrow();
     let lines: Vec<ChatLine> = a.histories.get(key).map(|v| v.iter().map(|l| chat_line(&a, l)).collect()).unwrap_or_default();
     let h = header_for(&a, key);
     if let Some(w) = a.chats.get(key) {
         apply_header_window(w, &h);
         w.set_call_state(call_state_for(&a, key).into());
-        w.set_lines(ModelRc::new(VecModel::from(lines.clone())));
+        if let Some(model) = a.chat_models.get(key) {
+            sync_lines(model, lines.clone());
+        }
     }
     if a.docked_chat.as_deref() == Some(key) {
         if let Some(m) = a.main.upgrade() {
             apply_header_docked(&m, &h);
             m.set_dchat_call_state(call_state_for(&a, key).into());
-            m.set_dchat_lines(ModelRc::new(VecModel::from(lines)));
+            if a.dock_model_key != key {
+                a.dock_model.set_vec(lines);
+                drop(a);
+                app.borrow_mut().dock_model_key = key.to_string();
+                return;
+            }
+            sync_lines(&a.dock_model, lines);
         }
     }
 }
@@ -532,6 +600,11 @@ fn chat_line_action(app: &AppRc, key: &str, action: &str, arg: &str) {
             let (who, text) = arg.split_once('\u{1}').unwrap_or(("", arg));
             app.borrow().host.send("todo", &ToPlugin::Task { text: text.to_string(), from: who.to_string() });
             notice(app, "Sent to your todo list.");
+        }
+        "image" => {
+            if let Ok(id) = arg.parse::<u64>() {
+                open_picture(app, key, id);
+            }
         }
         "delete" if mode_of(key) == "contact" => {
             if let Ok(id) = arg.parse() {
@@ -648,6 +721,8 @@ fn open_chat(app: &AppRc, key: &str) {
         w.on_file_action(move |act, f| chat_file_action(&ap, &act, &f));
         let (ap, k) = (app.clone(), key.to_string());
         w.on_call_toggle(move || call_toggle(&ap, &k));
+        let (ap, k) = (app.clone(), key.to_string());
+        w.on_paste_image(move |t| paste_picture(&ap, &k, &t));
         install_file_drop(app, w.window(), Some(key.to_string()));
         let weak = w.as_weak();
         w.on_drag(move |dx, dy| {
@@ -1368,7 +1443,10 @@ fn handle_event(app: &AppRc, ev: Event) {
         Event::ScreenOut(pipe) => {
             let idx = app.borrow().share_monitor;
             match screen::start_share(pipe, idx) {
-                Ok(s) => app.borrow_mut().share = Some(s),
+                Ok(s) => {
+                    app.borrow_mut().share = Some(s);
+                    show_share_frame(app, idx);
+                }
                 Err(e) => {
                     notice(app, &format!("Screen sharing: {e}"));
                     app.borrow().send(Command::ScreenShare(false));
@@ -1378,7 +1456,11 @@ fn handle_event(app: &AppRc, ev: Event) {
         }
         Event::ScreenIn(pipe) => open_viewer(app, pipe),
         Event::CallMedia(pipe) => {
-            match voice::start(pipe) {
+            let (mic, spk, vol) = {
+                let st = &app.borrow().settings;
+                (st.audio_in.clone(), st.audio_out.clone(), st.call_volume)
+            };
+            match voice::start(pipe, &mic, &spk, vol) {
                 Ok(v) => {
                     let muted = app.borrow().call_muted;
                     v.set_muted(muted);
@@ -1724,6 +1806,12 @@ fn main() {
         my_laptop: false,
         call: None,
         voice: None,
+        share_frame: vec![],
+        images: HashMap::new(),
+        image_windows: vec![],
+        chat_models: HashMap::new(),
+        dock_model: Rc::new(VecModel::default()),
+        dock_model_key: String::new(),
         call_muted: false,
         share: None,
         share_monitor: 0,
@@ -1737,6 +1825,7 @@ fn main() {
         eprintln!("hotkey {e}");
     }
     main.set_gadgets(ModelRc::from(app.borrow().gadgets.clone()));
+    main.set_dchat_lines(ModelRc::from(app.borrow().dock_model.clone()));
     {
         // Older settings files: fill in the default sound per event.
         let mut a = app.borrow_mut();
@@ -1747,6 +1836,7 @@ fn main() {
         }
     }
     sound_rows(&app);
+    audio_rows(&app);
     refresh_plugin_rows(&app);
 
     wire_login(&app, &main);
@@ -2270,7 +2360,9 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
     main.on_call_share(move || {
         let on = ap.borrow().call.as_ref().map(|c| c.screen_out).unwrap_or(false);
         if on {
-            ap.borrow_mut().share = None;
+            let mut a = ap.borrow_mut();
+            a.share = None;
+            a.share_frame.clear();
         }
         ap.borrow().send(Command::ScreenShare(!on));
     });
@@ -2283,14 +2375,18 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
     });
     let ap = app.clone();
     main.on_call_monitor_pick(move |i| {
-        {
+        let idx = i.max(0) as usize;
+        let sharing = {
             let mut a = ap.borrow_mut();
-            a.share_monitor = i.max(0) as usize;
+            a.share_monitor = idx;
             // Already sharing: switch screens on the fly.
-            let idx = a.share_monitor;
             if let Some(s) = a.share.as_mut() {
                 s.switch(idx);
             }
+            a.share.is_some()
+        };
+        if sharing {
+            show_share_frame(&ap, idx);
         }
         refresh_call_ui(&ap);
     });
@@ -2448,6 +2544,35 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
         ap.borrow().send(Command::WipeAccount);
     });
     let ap = app.clone();
+    main.on_audio_cycle(move |kind, dir| {
+        let (ins, outs) = voice::devices();
+        {
+            let mut a = ap.borrow_mut();
+            let (list, cur) = if kind == "in" { (ins, &mut a.settings.audio_in) } else { (outs, &mut a.settings.audio_out) };
+            // "" (system default) first, then every device.
+            let mut all = vec![String::new()];
+            all.extend(list);
+            let i = all.iter().position(|x| x == cur).unwrap_or(0) as i32;
+            *cur = all[(i + dir).rem_euclid(all.len() as i32) as usize].clone();
+            save_settings(&a.dir, &a.settings);
+        }
+        audio_rows(&ap);
+        notice(&ap, "Applies to the next call.");
+    });
+    let ap = app.clone();
+    main.on_audio_volume(move |v| {
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.call_volume = v.clamp(10, 400) as u32;
+            save_settings(&a.dir, &a.settings);
+            let vol = a.settings.call_volume;
+            if let Some(voice) = &a.voice {
+                voice.set_volume(vol);
+            }
+        }
+        audio_rows(&ap);
+    });
+    let ap = app.clone();
     main.on_sound_toggle(move |i, on| {
         {
             let mut a = ap.borrow_mut();
@@ -2566,6 +2691,11 @@ fn wire_docked_chat(app: &AppRc, main: &MainWindow) {
     });
     let ap = app.clone();
     main.on_dchat_file_action(move |a, f| chat_file_action(&ap, &a, &f));
+    let ap = app.clone();
+    main.on_dchat_paste_image(move |t| match key(&ap) {
+        Some(k) => paste_picture(&ap, &k, &t),
+        None => false,
+    });
     let ap = app.clone();
     main.on_dchat_undock(move || {
         let Some(id) = ap.borrow_mut().docked_chat.take() else { return };
@@ -3073,6 +3203,7 @@ fn on_call(app: &AppRc, v: CallView) {
         let was_ringing = a.call.as_ref().map(|c| c.state == CallState::Ringing).unwrap_or(false);
         if ended || !v.screen_out {
             a.share = None;
+            a.share_frame.clear();
         }
         if ended || !v.screen_in {
             if let Some(s) = a.viewer_stop.take() {
@@ -3177,4 +3308,97 @@ fn open_viewer(app: &AppRc, pipe: Arc<rim_core::engine::ScreenPipe>) {
         Err(e) => notice(app, &format!("Screen: {e}")),
     }
     refresh_call_ui(app);
+}
+
+// ================================================================ pictures
+
+/// Ctrl+V in a chat: if the clipboard holds a picture, send it (with the
+/// typed text as caption). False lets the text field paste normally.
+fn paste_picture(app: &AppRc, key: &str, text: &str) -> bool {
+    if mode_of(key) == "group" {
+        return false;
+    }
+    let Ok(mut cb) = arboard::Clipboard::new() else { return false };
+    let Ok(pic) = cb.get_image() else { return false };
+    let Some(rgba) = image::RgbaImage::from_raw(pic.width as u32, pic.height as u32, pic.bytes.into_owned()) else { return false };
+    match encode_picture(image::DynamicImage::ImageRgba8(rgba)) {
+        Ok(jpeg) => {
+            let id = if key == "notes" { "self".to_string() } else { key.to_string() };
+            app.borrow().send(Command::SendImage { id, jpeg, text: text.to_string() });
+        }
+        Err(e) => notice(app, &e),
+    }
+    true
+}
+
+/// JPEG small enough for one message: at most 1600 px and about 600 KB.
+fn encode_picture(mut img: image::DynamicImage) -> Result<Vec<u8>, String> {
+    if img.width() > 1600 || img.height() > 1600 {
+        img = img.resize(1600, 1600, image::imageops::FilterType::Triangle);
+    }
+    let rgb = img.to_rgb8();
+    for (scale, q) in [(1.0f32, 85u8), (1.0, 70), (0.75, 70), (0.5, 65), (0.35, 60)] {
+        let pic = if scale < 1.0 {
+            image::imageops::resize(&rgb, (rgb.width() as f32 * scale) as u32, (rgb.height() as f32 * scale) as u32, image::imageops::FilterType::Triangle)
+        } else {
+            rgb.clone()
+        };
+        let mut out = vec![];
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, q).encode_image(&pic).map_err(|e| e.to_string())?;
+        if out.len() <= 600 * 1024 {
+            return Ok(out);
+        }
+    }
+    Err("That picture is too large to send.".into())
+}
+
+/// Show a picture from a chat in its own window.
+fn open_picture(app: &AppRc, key: &str, id: u64) {
+    let (img, who) = {
+        let a = app.borrow();
+        let who = a.histories.get(key).and_then(|v| v.iter().find(|l| l.id == id)).map(|l| l.who.clone()).unwrap_or_default();
+        (a.images.get(&id).cloned(), who)
+    };
+    let Some(img) = img else { return };
+    let Ok(w) = ImageWindow::new() else { return };
+    apply_theme(&w.global::<Theme>(), palette(&app.borrow().settings.theme));
+    w.set_who(who.into());
+    w.set_picture(img);
+    let _ = w.show();
+    let mut a = app.borrow_mut();
+    a.image_windows.retain(|w| w.window().is_visible());
+    a.image_windows.push(w);
+}
+
+fn audio_rows(app: &AppRc) {
+    let a = app.borrow();
+    let Some(m) = a.main.upgrade() else { return };
+    let show = |n: &str| if n.is_empty() { "system default".to_string() } else { n.to_string() };
+    m.set_s_audio_in(show(&a.settings.audio_in).into());
+    m.set_s_audio_out(show(&a.settings.audio_out).into());
+    m.set_s_call_volume(a.settings.call_volume as i32);
+}
+
+/// A yellow frame around the monitor being shared, so it is always clear
+/// what the other side sees. Four thin always-on-top strips at the edges;
+/// clicks pass through them.
+fn show_share_frame(app: &AppRc, index: usize) {
+    app.borrow_mut().share_frame.clear();
+    let Some((x, y, w, h)) = screen::monitor_rect(index) else { return };
+    const T: u32 = 4;
+    let edges = [(x, y, w, T), (x, y + h as i32 - T as i32, w, T), (x, y, T, h), (x + w as i32 - T as i32, y, T, h)];
+    let mut v = vec![];
+    for (ex, ey, ew, eh) in edges {
+        let Ok(e) = ShareEdge::new() else { continue };
+        let win = e.window();
+        win.set_position(slint::PhysicalPosition::new(ex, ey));
+        win.set_size(slint::PhysicalSize::new(ew, eh));
+        let _ = e.show();
+        win.set_position(slint::PhysicalPosition::new(ex, ey));
+        win.set_size(slint::PhysicalSize::new(ew, eh));
+        dock::hide_from_taskbar(win);
+        dock::click_through(win);
+        v.push(e);
+    }
+    app.borrow_mut().share_frame = v;
 }

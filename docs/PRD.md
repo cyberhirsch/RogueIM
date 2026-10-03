@@ -143,7 +143,7 @@ Priority: **P0** = MVP, **P1** = v1.0, **P2** = later.
 | MS-6 | Local encrypted history with search | P0 |
 | MS-7 | Edit / delete-for-everyone (best effort, clearly labelled) | P1 |
 | MS-8 | Disappearing messages per chat | P1 |
-| MS-9 | **Plain text only**: no rich text, no markdown, no emoji picker, no stickers, no inline images, no remote content. Text shown exactly as typed | P0 |
+| MS-9 | **Plain text only**: no rich text, no markdown, no emoji picker, no stickers, no remote content. Text shown exactly as typed. Exception (owner's decision, v0.1.6): pictures pasted with Ctrl+V travel with the message | P0 |
 | MS-10 | Replies/quotes | P1 |
 | MS-11 | Message to multiple contacts at once (ICQ "multiple recipients") | P2 |
 | MS-12 | **Note to self**: a conversation with your own account, synced across own devices; text and files (files via direct connection between own devices) | P1 |

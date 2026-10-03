@@ -709,6 +709,7 @@ impl Engine {
             c.urgent_log.push(now());
         }
         let mut line = LineRec::text(m.id, m.ts, false, m.text.clone(), Delivery::Received);
+        line.image = m.image.clone();
         line.reply_to = m.reply_to;
         line.urgent = urgent;
         line.expires = m.ttl.map(|t| now() + t as i64);
@@ -902,8 +903,13 @@ impl Engine {
     // ================================================================ messaging commands
 
     pub fn send_text(&mut self, id: &str, text: String, reply_to: Option<u64>, urgent: bool) -> Result<()> {
+        self.send_message(id, text, reply_to, urgent, None)
+    }
+
+    /// Text and/or a picture (base64 JPEG) to a contact.
+    pub fn send_message(&mut self, id: &str, text: String, reply_to: Option<u64>, urgent: bool, image: Option<String>) -> Result<()> {
         let text = text.trim_end().to_string();
-        if text.is_empty() {
+        if text.is_empty() && image.is_none() {
             return Ok(());
         }
         let c = self.contact(id).ok_or_else(|| anyhow!("unknown contact"))?;
@@ -913,9 +919,10 @@ impl Engine {
         let ttl = c.disappearing;
         let msg_id = rand::random::<u64>() | 1;
         let ts = now();
-        let m = TextMsg { id: msg_id, ts, text: text.clone(), reply_to, urgent, ttl };
+        let m = TextMsg { id: msg_id, ts, text: text.clone(), reply_to, urgent, ttl, image: image.clone() };
         let c = self.contact_mut(id).unwrap();
         let mut line = LineRec::text(msg_id, ts, true, text, Delivery::Queued);
+        line.image = image;
         line.reply_to = reply_to;
         line.urgent = urgent;
         line.expires = ttl.map(|t| ts + t as i64);
@@ -1010,13 +1017,19 @@ impl Engine {
     }
 
     pub fn send_note(&mut self, text: String) {
+        self.send_note_image(text, None);
+    }
+
+    pub fn send_note_image(&mut self, text: String, image: Option<String>) {
         let text = text.trim_end().to_string();
-        if text.is_empty() {
+        if text.is_empty() && image.is_none() {
             return;
         }
         let id = rand::random::<u64>() | 1;
-        let m = TextMsg { id, ts: now(), text: text.clone(), reply_to: None, urgent: false, ttl: None };
-        self.p.notes.push(LineRec::text(id, m.ts, true, text, Delivery::Delivered));
+        let m = TextMsg { id, ts: now(), text: text.clone(), reply_to: None, urgent: false, ttl: None, image: image.clone() };
+        let mut line = LineRec::text(id, m.ts, true, text, Delivery::Delivered);
+        line.image = image;
+        self.p.notes.push(line);
         let _ = self.send_body("self", Body::SelfNote(m), Some(0));
         self.save();
         self.emit_notes();
@@ -1235,6 +1248,7 @@ impl Engine {
                 if let Some(c) = self.contact_mut(&contact) {
                     if !c.history.iter().any(|l| l.id == msg.id) {
                         let mut l = LineRec::text(msg.id, msg.ts, true, msg.text, Delivery::Delivered);
+                        l.image = msg.image;
                         l.reply_to = msg.reply_to;
                         l.expires = msg.ttl.map(|t| msg.ts + t as i64);
                         c.history.push(l);
@@ -1244,7 +1258,9 @@ impl Engine {
             }
             Body::SelfNote(m) => {
                 if !self.p.notes.iter().any(|l| l.id == m.id) {
-                    self.p.notes.push(LineRec::text(m.id, m.ts, true, m.text, Delivery::Delivered));
+                    let mut line = LineRec::text(m.id, m.ts, true, m.text, Delivery::Delivered);
+                    line.image = m.image;
+                    self.p.notes.push(line);
                 }
                 self.emit_notes();
             }

@@ -111,6 +111,18 @@ mod imp {
         }
     }
 
+    /// Let mouse clicks pass through a window (the share frame).
+    pub fn click_through(w: &slint::Window) {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{GetWindowLongPtrW, SetWindowLongPtrW, GWL_EXSTYLE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT};
+        let Some(h) = hwnd(w) else { return };
+        unsafe {
+            let ex = GetWindowLongPtrW(h, GWL_EXSTYLE);
+            SetWindowLongPtrW(h, GWL_EXSTYLE, ex | (WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE) as isize);
+            // A layered window needs its opacity set to show at all.
+            windows_sys::Win32::UI::WindowsAndMessaging::SetLayeredWindowAttributes(h, 0, 255, windows_sys::Win32::UI::WindowsAndMessaging::LWA_ALPHA);
+        }
+    }
+
     pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
         let Some(h) = hwnd(w) else { return false };
         let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
@@ -261,6 +273,9 @@ mod imp {
     /// hide the chat windows, so it stays.
     pub fn hide_from_taskbar(_w: &slint::Window) {}
 
+    /// Elsewhere the share frame is only 4 px wide; clicks on it are rare.
+    pub fn click_through(_w: &slint::Window) {}
+
     pub fn undock(w: &slint::Window) {
         #[cfg(target_os = "linux")]
         {
@@ -314,7 +329,7 @@ mod imp {
     }
 }
 
-pub use imp::{cursor, dock, hide_from_taskbar, monitors, undock};
+pub use imp::{click_through, cursor, dock, hide_from_taskbar, monitors, undock};
 
 /// The monitor to dock on: the preferred one if connected, else the primary.
 pub fn pick(w: &slint::Window, preferred: &str) -> Option<Monitor> {

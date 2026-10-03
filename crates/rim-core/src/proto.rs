@@ -262,6 +262,9 @@ pub struct TextMsg {
     pub urgent: bool,
     /// Disappearing messages: seconds after reading/sending.
     pub ttl: Option<u64>,
+    /// A pasted picture (base64 JPEG), shown with the message.
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -617,6 +620,8 @@ pub struct LineView {
     pub urgent: bool,
     pub expires: Option<i64>,
     pub file: Option<FileView>,
+    /// base64 JPEG
+    pub image: Option<String>,
 }
 
 #[derive(Debug, Clone)]

@@ -28,3 +28,11 @@ export component ScreenWindow inherits Window {
     }
     TipLayer { }
 }
+
+// One edge of the yellow frame around the screen being shared.
+export component ShareEdge inherits Window {
+    no-frame: true;
+    always-on-top: true;
+    background: #f5c400;
+    title: "RogueIM sharing";
+}

@@ -24,6 +24,7 @@ impl Engine {
             urgent: l.urgent,
             expires: l.expires,
             file: l.file.as_ref().and_then(|f| self.file_view(f)),
+            image: l.image.clone(),
         }
     }
 
@@ -41,6 +42,7 @@ impl Engine {
             urgent: false,
             expires: None,
             file: l.file.as_ref().and_then(|f| self.file_view(f)),
+            image: l.image.clone(),
         }
     }
 

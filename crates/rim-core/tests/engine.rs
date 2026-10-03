@@ -497,3 +497,25 @@ fn screen_share_in_call() {
     a.stop();
     b.stop();
 }
+
+#[test]
+fn picture_message() {
+    let a = Peer::start("alice", "pass-a");
+    let b = Peer::start("bob", "pass-b");
+    a.unlocked();
+    b.unlocked();
+    std::thread::sleep(Duration::from_millis(500));
+    let (bob_at_a, _) = befriend(&a, &b);
+    let jpeg: Vec<u8> = (0..50_000u32).map(|i| (i % 253) as u8).collect();
+    a.send(Command::SendImage { id: bob_at_a.clone(), jpeg: jpeg.clone(), text: "look".into() });
+    let got = b.wait(30, "picture", |e| match e {
+        Event::History { lines, .. } => lines.iter().find(|l| l.text == "look").and_then(|l| l.image.clone()),
+        _ => None,
+    });
+    assert_eq!(rim_core::identity::unb64(&got).unwrap(), jpeg);
+    // too large is refused, not sent
+    a.send(Command::SendImage { id: bob_at_a, jpeg: vec![0; 800 * 1024], text: String::new() });
+    a.wait(10, "size notice", |e| matches!(e, Event::Notice(n) if n.contains("too large")).then_some(()));
+    a.stop();
+    b.stop();
+}

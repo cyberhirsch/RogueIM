@@ -280,11 +280,13 @@ pub struct LineRec {
     pub expires: Option<i64>,
     #[serde(default)]
     pub file: Option<String>,
+    #[serde(default)]
+    pub image: Option<String>,
 }
 
 impl LineRec {
     pub fn text(id: u64, ts: i64, from_me: bool, text: String, delivery: Delivery) -> Self {
-        LineRec { id, ts, from_me, text, delivery, edited: false, deleted: false, reply_to: None, urgent: false, expires: None, file: None }
+        LineRec { id, ts, from_me, text, delivery, edited: false, deleted: false, reply_to: None, urgent: false, expires: None, file: None, image: None }
     }
 }
 

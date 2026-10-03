@@ -7676,6 +7676,7 @@ dependencies = [
  "flate2",
  "global-hotkey",
  "hex",
+ "image",
  "interprocess",
  "keyring",
  "nnnoiseless",

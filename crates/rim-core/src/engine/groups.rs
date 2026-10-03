@@ -551,6 +551,7 @@ impl Engine {
                 urgent: false,
                 expires: None,
                 file: None,
+                image: None,
             })
             .collect();
         self.emit(Event::GroupHistory { group: gid.to_string(), name: g.state.name.clone(), lines });
