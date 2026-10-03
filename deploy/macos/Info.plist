@@ -22,6 +22,17 @@
     <string>12.0</string>
     <key>NSHighResolutionCapable</key>
     <true/>
+    <key>CFBundleURLTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleURLName</key>
+            <string>RogueIM invite</string>
+            <key>CFBundleURLSchemes</key>
+            <array>
+                <string>rim</string>
+            </array>
+        </dict>
+    </array>
     <key>NSAppleEventsUsageDescription</key>
     <string>RogueIM's player gadget reads and controls Music and Spotify.</string>
 </dict>

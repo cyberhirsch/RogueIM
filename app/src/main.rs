@@ -7,6 +7,7 @@ mod desktop;
 mod dock;
 mod plugins;
 mod update;
+mod links;
 mod screen;
 mod voice;
 
@@ -243,6 +244,8 @@ struct App {
     plugin_net: Vec<(String, String, String)>,
     my_os: String,
     my_laptop: bool,
+    /// Links and "show" requests handed over by later starts.
+    link_rx: Option<Receiver<String>>,
     call: Option<CallView>,
     voice: Option<voice::Voice>,
     /// The yellow frame around the monitor being shared.
@@ -1294,6 +1297,7 @@ fn handle_event(app: &AppRc, ev: Event) {
             m.set_devices(ModelRc::new(VecModel::from(rows)));
         }
         Event::Invite(s) => {
+            m.set_invite_link(links::invite_link(&s).into());
             m.set_invite(s.into());
             m.set_panel(2);
         }
@@ -1715,6 +1719,13 @@ fn main() {
         let _ = notify_rust::set_application("net.rogueim.RogueIM");
     }
     let (profile, port) = parse_args();
+    // One RogueIM per profile: a second start hands over its link and leaves.
+    let url_arg = std::env::args().skip(1).find(|a| a.starts_with("rim:"));
+    if links::hand_over(&profile, url_arg.as_deref().unwrap_or("show")) {
+        return;
+    }
+    let link_rx = links::listen(&profile);
+    links::register_scheme(&profile);
     let autostarted = std::env::args().any(|a| a == "--autostart");
     // Restarted by the updater: let the old process let go of the profile first.
     let after_update = std::env::args().any(|a| a == "--after-update");
@@ -1804,6 +1815,7 @@ fn main() {
         plugin_net: vec![],
         my_os: String::new(),
         my_laptop: false,
+        link_rx,
         call: None,
         voice: None,
         share_frame: vec![],
@@ -1859,6 +1871,7 @@ fn main() {
             }
             poll_desktop(&app);
             poll_plugins(&app);
+            poll_links(&app);
             poll_update(&app);
             let expired = app.borrow().notice_until.map(|t| Instant::now() > t).unwrap_or(false);
             if expired {
@@ -1934,6 +1947,10 @@ fn main() {
         slint::Timer::single_shot(Duration::from_millis(150), move || redock(&app));
     }
     install_file_drop(&app, main.window(), None);
+    if let Some(code) = url_arg.as_deref().and_then(links::invite_from_url) {
+        let app = app.clone();
+        slint::Timer::single_shot(Duration::from_millis(400), move || open_invite(&app, &code));
+    }
     // A passphrase remembered in the OS keychain unlocks right away (ID-3).
     if Store::exists(&app.borrow().dir) {
         let profile = app.borrow().profile.clone();
@@ -2048,7 +2065,11 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
     let ap = app.clone();
     main.on_revoke_invite(move |t| ap.borrow().send(Command::RevokeInvite { token: t.to_string() }));
     let ap = app.clone();
-    main.on_add_contact(move |inv, text| ap.borrow().send(Command::AddContact { invite: inv.to_string(), text: text.to_string() }));
+    main.on_add_contact(move |inv, text| {
+        // Accept a whole invite link as well as the bare code.
+        let code = links::invite_from_url(&inv).unwrap_or_else(|| inv.to_string());
+        ap.borrow().send(Command::AddContact { invite: code, text: text.to_string() })
+    });
     let ap = app.clone();
     main.on_accept(move |id| ap.borrow().send(Command::Accept { id: id.to_string() }));
     let ap = app.clone();
@@ -3401,4 +3422,34 @@ fn show_share_frame(app: &AppRc, index: usize) {
         v.push(e);
     }
     app.borrow_mut().share_frame = v;
+}
+
+// ================================================================ invite links
+
+fn poll_links(app: &AppRc) {
+    let msgs: Vec<String> = match &app.borrow().link_rx {
+        Some(rx) => rx.try_iter().collect(),
+        None => return,
+    };
+    for msg in msgs {
+        match links::invite_from_url(&msg) {
+            Some(code) => open_invite(app, &code),
+            None => {
+                set_hidden(app, false);
+                set_collapsed(app, false);
+            }
+        }
+    }
+}
+
+/// An invite arrived by link: show it in the "add contact" panel. The user
+/// still sends the request (with their own message) themselves.
+fn open_invite(app: &AppRc, code: &str) {
+    set_hidden(app, false);
+    set_collapsed(app, false);
+    if let Some(m) = app.borrow().main.upgrade() {
+        m.set_add_invite(code.into());
+        m.set_panel(1);
+    }
+    notice(app, "Invite received: check it and send your request.");
 }

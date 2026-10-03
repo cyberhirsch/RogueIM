@@ -1,3 +1,4 @@
 target/
 *.tmp
 rim-cli-profile/
+.claude/

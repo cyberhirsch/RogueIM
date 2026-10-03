@@ -164,6 +164,8 @@ export component MainWindow inherits Window {
     in property <string> link-check-words;
     in-out property <bool> remember;
     in-out property <string> invite-n: "5";
+    in-out property <string> add-invite;
+    in property <string> invite-link;
     in-out property <bool> s-start-min;
     in-out property <bool> s-typing: true;
     in-out property <bool> s-notify-online: true;
@@ -442,7 +444,7 @@ export component MainWindow inherits Window {
                 padding: 6px;
                 spacing: 4px;
                 Text { text: "> add contact"; color: Theme.accent; font-size: Theme.small; }
-                inv := RInput { placeholder: "paste rim2:… invite"; }
+                inv := RInput { placeholder: "paste a rim2:… invite or invite link"; text <=> root.add-invite; }
                 msg := RInput { placeholder: "request message"; text: "Please add me to your list."; }
                 HorizontalLayout {
                     spacing: 4px;
@@ -508,7 +510,8 @@ export component MainWindow inherits Window {
                 if root.invite != "": HorizontalLayout {
                     spacing: 4px;
                     alignment: start;
-                    RButton { text: "copy"; clicked => { root.copy-text(root.invite); } }
+                    RButton { text: "copy link"; tip: "a web link: opens RogueIM, or shows how to get it"; clicked => { root.copy-text(root.invite-link); } }
+                    RButton { text: "copy code"; tip: "the bare invite code"; clicked => { root.copy-text(root.invite); } }
                     RButton { text: "close"; tone: Theme.dim; clicked => { root.panel = 0; } }
                 }
                 if root.invites.length > 0: RCaption { text: "active invites:"; }
