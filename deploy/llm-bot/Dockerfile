@@ -14,7 +14,8 @@ RUN cargo build --release -p rim-llm-bot
 
 FROM debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/* \
- && useradd --system --home /data --shell /usr/sbin/nologin rogueim \n && mkdir -p /data && chown rogueim:rogueim /data
+ && useradd --system --home /data --shell /usr/sbin/nologin rogueim \
+ && mkdir -p /data && chown rogueim:rogueim /data
 COPY --from=build /src/target/release/rim-llm-bot /usr/local/bin/rim-llm-bot
 USER rogueim
 VOLUME /data
