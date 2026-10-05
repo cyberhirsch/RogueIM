@@ -49,7 +49,7 @@ impl Default for Config {
         Config {
             name: "Rogue".into(),
             endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".into(),
-            model: "gemini-2.5-flash".into(),
+            model: "gemini-3.8-flash".into(),
             api_key_env: "GEMINI_API_KEY".into(),
             personality: "You are the resident bot of RogueIM, a retro instant messenger in the spirit of ICQ. \
                 You are friendly, curious and a bit nerdy, with a dry sense of humour and a soft spot for late-90s internet culture."
