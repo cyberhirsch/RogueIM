@@ -43,6 +43,7 @@ export struct GadgetRow { items: [GadgetItem] }
 export struct Gadget { id: string, name: string, collapsed: bool, rows: [GadgetRow] }
 export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool, usage: string, first: bool, last: bool }
 export struct ListRow { kind: string, id: string, name: string }
+export struct BotRow { name: string, info: string }
 export struct SoundRow { label: string, on: bool, source: string }
 
 // One element of a plugin's section, drawn by RogueIM (plugins never render).
@@ -342,6 +343,14 @@ export component MainWindow inherits Window {
     callback sound-pick(int);
     callback sound-play(int);
     callback list-clear(string, string);
+    in property <[BotRow]> bot-rows;
+    in property <bool> rogue-on;
+    in property <bool> api-on;
+    in property <string> api-name;
+    callback rogue-toggle(bool);
+    callback api-toggle(bool);
+    callback bot-add(string, string, string, string, string) -> bool;
+    callback bot-remove(string);
     callback folder-move(string, int);
     callback folder-delete(string);
     callback folder-rename(string, string);
@@ -680,6 +689,7 @@ export component MainWindow inherits Window {
                     RTab { text: "devices"; active: root.settings-tab == 2; clicked => { root.settings-tab = 2; } }
                     RTab { text: "backup"; active: root.settings-tab == 3; clicked => { root.settings-tab = 3; } }
                     RTab { text: "plugins"; active: root.settings-tab == 5; clicked => { root.settings-tab = 5; } }
+                    RTab { text: "bots"; active: root.settings-tab == 9; clicked => { root.settings-tab = 9; } }
                 }
 
                 ScrollView {
@@ -688,6 +698,42 @@ export component MainWindow inherits Window {
                     alignment: start;
                     padding-right: 10px;
                     spacing: 3px;
+
+                if root.settings-tab == 9: VerticalLayout {
+                    alignment: start;
+                    spacing: 4px;
+                    RCheck { text: "Rogue, the free AI contact"; checked: root.rogue-on; toggled(v) => { root.rogue-toggle(v); } }
+                    RCaption { text: "Rogue answers questions about RogueIM and anything else. Paid for by short ads in its replies. What you write to Rogue is not end-to-end encrypted: it goes to an AI provider."; wrap: word-wrap; }
+
+                    RCaption { text: "local AI bots"; }
+                    for b in root.bot-rows: HorizontalLayout {
+                        spacing: 4px;
+                        height: 22px;
+                        Text { text: b.name; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; }
+                        Text { text: b.info; color: Theme.dim; font-size: 10px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                        RButton { text: "x"; tip: "remove this bot and its API key"; clicked => { root.bot-remove(b.name); } }
+                    }
+                    bname := RInput { placeholder: "name"; }
+                    bend := RInput { placeholder: "endpoint (OpenAI-compatible …/chat/completions)"; }
+                    bmodel := RInput { placeholder: "model"; }
+                    bkey := RInput { placeholder: "API key (kept in the OS keychain; empty for local models)"; password: true; }
+                    bpers := RInput { placeholder: "personality (optional)"; }
+                    HorizontalLayout {
+                        alignment: start;
+                        RButton {
+                            text: "add bot";
+                            clicked => {
+                                if (root.bot-add(bname.text, bend.text, bmodel.text, bkey.text, bpers.text)) {
+                                    bname.text = ""; bend.text = ""; bmodel.text = ""; bkey.text = ""; bpers.text = "";
+                                }
+                            }
+                        }
+                    }
+                    RCaption { text: "A local bot talks to the endpoint straight from this computer with your key, never over the RogueIM network. Its chat is kept in memory only. Works with any OpenAI-compatible API, also local ones (e.g. http://localhost:11434/v1/chat/completions)."; wrap: word-wrap; }
+
+                    RCheck { text: "script API"; checked: root.api-on; toggled(v) => { root.api-toggle(v); } }
+                    RCaption { text: "Programs on this computer can read incoming messages and send as you, over the local socket " + root.api-name + " (JSON lines, same as rim-cli --api; never a network port)."; wrap: word-wrap; }
+                }
 
                 if root.settings-tab == 5: VerticalLayout {
                     alignment: start;
@@ -1077,7 +1123,7 @@ export component MainWindow inherits Window {
                                 else if (c.kind == "contact") { root.select-contact(c.id); }
                             }
                             double-clicked => {
-                                if (c.kind == "contact") { root.open-chat(c.id); }
+                                if (c.kind == "contact" || c.kind == "bot") { root.open-chat(c.id); }
                                 else if (c.kind == "notes") { root.open-notes(); }
                                 else if (c.kind == "group") { root.open-group(c.id); }
                             }

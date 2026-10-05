@@ -3,6 +3,7 @@
 //! RogueIM desktop: a buddy list that is always docked to a screen edge and
 //! always on top, chats in their own windows or docked into the bar.
 
+mod bots;
 mod desktop;
 mod dock;
 mod plugins;
@@ -74,6 +75,13 @@ struct Settings {
     layout_updated: i64,
     update_check: bool,
     update_auto: bool,
+    /// Rogue, the public AI contact: wanted, and whether it was added once already.
+    rogue: bool,
+    rogue_added: bool,
+    /// Local AI bots (their API keys are in the OS keychain).
+    bots: Vec<bots::LocalBot>,
+    /// The local script API (JSON lines over a local socket).
+    api: bool,
 }
 
 impl Default for Settings {
@@ -111,6 +119,10 @@ impl Default for Settings {
             layout_updated: 0,
             update_check: true,
             update_auto: false,
+            rogue: true,
+            rogue_added: false,
+            bots: vec![],
+            api: false,
         }
     }
 }
@@ -266,6 +278,11 @@ struct App {
     update_found: Option<update::Release>,
     /// The user started this check (so "up to date" and errors are shown).
     update_manual: bool,
+    /// Answers of local bots: (bot name, reply).
+    bot_tx: std::sync::mpsc::Sender<(String, String)>,
+    bot_rx: Receiver<(String, String)>,
+    bot_line: u64,
+    api: Option<bots::Api>,
 }
 
 type AppRc = Rc<RefCell<App>>;
@@ -385,6 +402,8 @@ fn mode_of(key: &str) -> &'static str {
         "notes"
     } else if key.starts_with("g:") {
         "group"
+    } else if key.starts_with("b:") {
+        "bot"
     } else {
         "contact"
     }
@@ -422,6 +441,10 @@ fn header_for(app: &App, key: &str) -> Header {
     };
     match mode_of(key) {
         "notes" => empty("note to self", "synced to your devices", "notes", ""),
+        "bot" => match app.settings.bots.iter().find(|b| bots::key(&b.name) == key) {
+            Some(b) => empty(&b.name, &format!("local AI bot · {}", b.model), "bot", &format!("goes from this computer to {}", host_of(&b.endpoint))),
+            None => empty("bot", "removed", "bot", ""),
+        },
         "group" => match app.groups.iter().find(|g| format!("g:{}", g.id) == key) {
             Some(g) => empty(&g.name, &format!("{} members", g.members.len()), "group", "megolm"),
             None => empty("group", "", "group", ""),
@@ -556,6 +579,7 @@ fn request_history(app: &AppRc, key: &str) {
     let a = app.borrow();
     match mode_of(key) {
         "notes" => a.send(Command::OpenNotes),
+        "bot" => {}
         "group" => a.send(Command::OpenGroup { group: key[2..].to_string() }),
         _ => a.send(Command::OpenChat { id: key.to_string() }),
     }
@@ -571,6 +595,10 @@ fn close_history(app: &AppRc, key: &str) {
 }
 
 fn chat_send(app: &AppRc, key: &str, text: &str, urgent: bool, reply: &str) {
+    if mode_of(key) == "bot" {
+        bot_send(app, key, text);
+        return;
+    }
     let a = app.borrow();
     match mode_of(key) {
         "notes" => a.send(Command::SendNote(text.to_string())),
@@ -625,7 +653,7 @@ fn chat_edit(app: &AppRc, key: &str, id: &str, text: &str) {
 }
 
 fn chat_file_send(app: &AppRc, key: &str) {
-    if mode_of(key) == "group" {
+    if matches!(mode_of(key), "group" | "bot") {
         return;
     }
     let Some(path) = rfd::FileDialog::new().set_title("Send a file (direct connection only)").pick_file() else { return };
@@ -876,6 +904,18 @@ fn rebuild_contacts(app: &AppRc) {
         r
     };
     let mut rows = vec![plain_row("notes", "notes", "note to self", "notes", acc)];
+    if !a.settings.bots.is_empty() {
+        rows.push(header("bots", a.settings.bots.len()));
+        if !collapsed("bots") {
+            for b in &a.settings.bots {
+                let mut r = plain_row("bot", &bots::key(&b.name), &b.name, "bot", acc);
+                r.status = "local".into();
+                r.os = "AI".into();
+                r.bot = true;
+                rows.push(r);
+            }
+        }
+    }
     if !a.groups.is_empty() {
         rows.push(header("groups", a.groups.len()));
         if !collapsed("groups") {
@@ -1206,6 +1246,9 @@ fn handle_event(app: &AppRc, ev: Event) {
         }
         Event::Linked => notice(app, "This device is now linked to your account."),
         Event::Contacts(list) => {
+            if let Some(api) = &app.borrow().api {
+                api.set_contacts(&list);
+            }
             app.borrow_mut().contacts = list;
             rebuild_contacts(app);
             list_rows(app);
@@ -1316,7 +1359,10 @@ fn handle_event(app: &AppRc, ev: Event) {
             let rows: Vec<SearchRow> = list.iter().map(|(id, name, l)| SearchRow { id: id.clone().into(), name: name.clone().into(), time: fmt_date(l.ts, off).into(), text: l.text.clone().into() }).collect();
             m.set_results(ModelRc::new(VecModel::from(rows)));
         }
-        Event::Incoming { id, name, urgent, .. } => {
+        Event::Incoming { id, name, urgent, text } => {
+            if let Some(api) = &app.borrow().api {
+                api.message(&name, &text, urgent);
+            }
             let (busy, open, notify, popups) = {
                 let a = app.borrow();
                 let open = a.docked_chat.as_deref() == Some(id.as_str()) || a.chats.get(&id).map(|w| w.window().is_visible()).unwrap_or(false);
@@ -1538,6 +1584,138 @@ fn on_unlocked(app: &AppRc, ev: Event) {
         start_plugin(app, &id);
     }
     refresh_plugin_rows(app);
+    // Rogue joins the list once, unless switched off; the script API if wanted.
+    let (want, added) = {
+        let st = &app.borrow().settings;
+        (st.rogue, st.rogue_added)
+    };
+    if want && !added {
+        add_rogue(app);
+    }
+    if app.borrow().settings.api {
+        start_api(app);
+    }
+    refresh_bot_rows(app);
+}
+
+// ================================================================ bots
+
+fn host_of(url: &str) -> String {
+    url.split("://").nth(1).unwrap_or(url).split('/').next().unwrap_or("").to_string()
+}
+
+fn add_rogue(app: &AppRc) {
+    let mut a = app.borrow_mut();
+    if bots::rogue(&a.contacts).is_none() {
+        a.send(Command::AddContact { invite: bots::ROGUE_INVITE.into(), text: "Hi Rogue!".into() });
+    }
+    a.settings.rogue = true;
+    a.settings.rogue_added = true;
+    save_settings(&a.dir, &a.settings);
+}
+
+fn remove_rogue(app: &AppRc) {
+    let mut a = app.borrow_mut();
+    if let Some(c) = bots::rogue(&a.contacts) {
+        let id = c.id.clone();
+        a.send(Command::Remove { id });
+    }
+    a.settings.rogue = false;
+    a.settings.rogue_added = true;
+    save_settings(&a.dir, &a.settings);
+}
+
+fn start_api(app: &AppRc) {
+    let started = {
+        let a = app.borrow();
+        if a.api.is_some() {
+            return;
+        }
+        let Some(h) = a.engine.clone() else { return };
+        bots::Api::start(&a.profile, h)
+    };
+    match started {
+        Ok(api) => {
+            api.set_contacts(&app.borrow().contacts);
+            app.borrow_mut().api = Some(api);
+        }
+        Err(e) => notice(app, &format!("Could not start the script API: {e}")),
+    }
+}
+
+/// A line in a local bot's chat (kept in memory only, gone when RogueIM quits).
+fn bot_line(app: &AppRc, key: &str, mine: bool, who: &str, text: &str) {
+    let mut a = app.borrow_mut();
+    a.bot_line += 1;
+    let line = LineView {
+        id: a.bot_line,
+        ts: now_secs(),
+        from_me: mine,
+        who: who.to_string(),
+        text: text.to_string(),
+        delivery: if mine { Delivery::Delivered } else { Delivery::Received },
+        edited: false,
+        deleted: false,
+        reply_to: None,
+        urgent: false,
+        expires: None,
+        file: None,
+        image: None,
+    };
+    a.histories.entry(key.to_string()).or_default().push(line);
+}
+
+fn bot_send(app: &AppRc, key: &str, text: &str) {
+    let (bot, nick, profile, tx) = {
+        let a = app.borrow();
+        let Some(b) = a.settings.bots.iter().find(|b| bots::key(&b.name) == key).cloned() else { return };
+        (b, a.my_nick.clone(), a.profile.clone(), a.bot_tx.clone())
+    };
+    bot_line(app, key, true, &nick, text);
+    let history: Vec<(bool, String)> = {
+        let a = app.borrow();
+        let lines = a.histories.get(key).map(|v| v.as_slice()).unwrap_or(&[]);
+        lines[lines.len().saturating_sub(24)..].iter().map(|l| (l.from_me, l.text.clone())).collect()
+    };
+    refresh_chat(app, key);
+    let api_key = bots::api_key(&profile, &bot.name).unwrap_or_default();
+    bots::ask(bot, api_key, history, tx);
+}
+
+fn poll_bots(app: &AppRc) {
+    let replies: Vec<(String, String)> = app.borrow().bot_rx.try_iter().collect();
+    for (name, reply) in replies {
+        let key = bots::key(&name);
+        bot_line(app, &key, false, &name, &reply);
+        let open = {
+            let a = app.borrow();
+            a.docked_chat.as_deref() == Some(key.as_str()) || a.chats.get(&key).map(|w| w.window().is_visible()).unwrap_or(false)
+        };
+        if open {
+            refresh_chat(app, &key);
+        } else {
+            play(app, desktop::Sound::Message);
+            open_chat(app, &key);
+        }
+    }
+}
+
+fn refresh_bot_rows(app: &AppRc) {
+    {
+        let a = app.borrow();
+        let Some(m) = a.main.upgrade() else { return };
+        let rows: Vec<BotRow> = a
+            .settings
+            .bots
+            .iter()
+            .map(|b| BotRow { name: b.name.clone().into(), info: format!("{} · {}", b.model, host_of(&b.endpoint)).into() })
+            .collect();
+        m.set_bot_rows(ModelRc::new(VecModel::from(rows)));
+        m.set_rogue_on(a.settings.rogue);
+        m.set_api_on(a.settings.api);
+        m.set_api_name(format!("rogueim-app-{}", a.profile).into());
+    }
+    rebuild_contacts(app);
 }
 
 // ================================================================ main
@@ -1772,6 +1950,7 @@ fn main() {
     let labels: Vec<SharedString> = Status::SELECTABLE.iter().map(|s| s.label().into()).collect();
     main.set_status_labels(ModelRc::new(VecModel::from(labels)));
 
+    let (bot_tx, bot_rx) = std::sync::mpsc::channel();
     let app: AppRc = Rc::new(RefCell::new(App {
         dir,
         profile,
@@ -1833,6 +2012,10 @@ fn main() {
         update_rx: None,
         update_found: None,
         update_manual: false,
+        bot_tx,
+        bot_rx,
+        bot_line: 1 << 60,
+        api: None,
     }));
     for e in register_hotkeys(&app) {
         eprintln!("hotkey {e}");
@@ -1874,6 +2057,7 @@ fn main() {
             poll_plugins(&app);
             poll_links(&app);
             poll_update(&app);
+            poll_bots(&app);
             let expired = app.borrow().notice_until.map(|t| Instant::now() > t).unwrap_or(false);
             if expired {
                 app.borrow_mut().notice_until = None;
@@ -2291,6 +2475,60 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
 }
 
 fn wire_settings(app: &AppRc, main: &MainWindow) {
+    let ap = app.clone();
+    main.on_rogue_toggle(move |on| {
+        if on { add_rogue(&ap) } else { remove_rogue(&ap) }
+        refresh_bot_rows(&ap);
+    });
+    let ap = app.clone();
+    main.on_api_toggle(move |on| {
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.api = on;
+            save_settings(&a.dir, &a.settings);
+        }
+        if on {
+            start_api(&ap);
+        } else if ap.borrow().api.is_some() {
+            notice(&ap, "The script API stops after a restart.");
+        }
+        refresh_bot_rows(&ap);
+    });
+    let ap = app.clone();
+    main.on_bot_add(move |name, endpoint, model, key, personality| {
+        let name = name.trim().to_string();
+        let endpoint = endpoint.trim().to_string();
+        if name.is_empty() || model.trim().is_empty() || !endpoint.starts_with("http") {
+            notice(&ap, "A bot needs a name, an http(s) endpoint and a model.");
+            return false;
+        }
+        let profile = ap.borrow().profile.clone();
+        if !key.is_empty() {
+            if let Err(e) = bots::set_api_key(&profile, &name, &key) {
+                notice(&ap, &format!("Could not store the API key in the keychain: {e}"));
+                return false;
+            }
+        }
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.bots.retain(|b| b.name != name);
+            a.settings.bots.push(bots::LocalBot { name, endpoint, model: model.trim().to_string(), personality: personality.to_string() });
+            save_settings(&a.dir, &a.settings);
+        }
+        refresh_bot_rows(&ap);
+        true
+    });
+    let ap = app.clone();
+    main.on_bot_remove(move |name| {
+        {
+            let mut a = ap.borrow_mut();
+            bots::forget_api_key(&a.profile, &name);
+            a.settings.bots.retain(|b| b.name != name.as_str());
+            a.histories.remove(&bots::key(&name));
+            save_settings(&a.dir, &a.settings);
+        }
+        refresh_bot_rows(&ap);
+    });
     let ap = app.clone();
     main.on_set_theme(move |name| {
         let next = palette(&name);
@@ -3337,7 +3575,7 @@ fn open_viewer(app: &AppRc, pipe: Arc<rim_core::engine::ScreenPipe>) {
 /// Ctrl+V in a chat: if the clipboard holds a picture, send it (with the
 /// typed text as caption). False lets the text field paste normally.
 fn paste_picture(app: &AppRc, key: &str, text: &str) -> bool {
-    if mode_of(key) == "group" {
+    if matches!(mode_of(key), "group" | "bot") {
         return false;
     }
     let Ok(mut cb) = arboard::Clipboard::new() else { return false };

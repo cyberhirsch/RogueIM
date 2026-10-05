@@ -118,6 +118,17 @@ profile (time, name, fingerprint, text) for the operator to review. Personality,
 ad text and limits live in a `bot.json` (see `deploy/llm-bot/bot.example.json`); `deploy/llm-bot/Dockerfile` runs it,
 for example on a Raspberry Pi.
 
+### Bots in the app (settings → bots)
+
+- **Rogue**, the free AI contact, is added on first start. Switching it off removes the contact; switching it on adds it again.
+- **Local AI bots**: name, endpoint, model, API key. The bot appears under "bots" in the list and talks to the
+  endpoint straight from your computer, not over the RogueIM network. Any OpenAI-compatible API works, local ones too
+  (e.g. Ollama at `http://localhost:11434/v1/chat/completions`). The key is kept in the OS keychain; the chat stays in
+  memory only.
+- **Script API**: when on, programs on this computer can connect to the local socket / named pipe
+  `rogueim-app-<profile>` and use the same JSON lines as `rim-cli --api` (below): read incoming messages, send as you,
+  set your status.
+
 ## Bots and scripts
 
 ```

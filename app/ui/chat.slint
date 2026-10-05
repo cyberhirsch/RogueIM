@@ -379,7 +379,7 @@ export component ChatPane inherits Rectangle {
                     font-size: Theme.fs;
                 }
             }
-            if root.mode != "group": TButton {
+            if root.mode != "group" && root.mode != "bot": TButton {
                 glyph: "+";
                 tip: "send a file (direct connection only; you can also drop files here)";
                 height: 24px;
