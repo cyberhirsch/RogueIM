@@ -676,8 +676,11 @@ pub struct NetView {
     pub helper: bool,
     pub held: usize,
     pub mailbox_last_fetch: i64,
-    /// Connected peers, named where they are contacts or own devices.
+    /// Peers with a direct connection, named where they are contacts or own devices.
     pub peers: Vec<String>,
+    /// Peers reachable only through a relay (RIM's protocols do not run there;
+    /// it only helps to punch a direct path).
+    pub relayed: Vec<String>,
     /// Relay circuits we can be reached through.
     pub circuits: Vec<String>,
     /// Our address as public nodes see it (what hole punching aims at).

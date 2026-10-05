@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rim-core", "crates/rim-cli", "crates/rim-plugin-sdk", "app", "plugins/pomodoro", "plugins/todo", "plugins/player"]
+members = ["crates/rim-core", "crates/rim-cli", "crates/rim-plugin-sdk", "app", "plugins/pomodoro", "plugins/todo", "plugins/player", "bots/llm"]
 
 [workspace.package]
 version = "0.1.7"

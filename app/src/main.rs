@@ -1392,11 +1392,12 @@ fn handle_event(app: &AppRc, ev: Event) {
                 if a.plugin_net.is_empty() { "  none".to_string() } else { a.plugin_net.iter().map(|(p, h, why)| format!("  {p} → {h} ({why})")).collect::<Vec<_>>().join("\n") }
             };
             let info = format!(
-                "peer {}\nNAT: {}\nconnected peers: {}\n{}\nseen from outside (for hole punching):\n{}\nrelay circuits:\n{}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {}{} · holding {} message(s)\nlast mailbox check: {}\nplugin network use:\n{}",
+                "peer {}\nNAT: {}\nconnected peers: {}\ndirect:\n{}\nonly via relay (not usable for chat, calls or files):\n{}\nseen from outside (for hole punching):\n{}\nrelay circuits:\n{}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {}{} · holding {} message(s)\nlast mailbox check: {}\nplugin network use:\n{}",
                 n.peer_id,
                 n.nat,
                 n.connected_peers,
-                lines(&n.peers),
+                if n.peers.is_empty() { "  none".to_string() } else { lines(&n.peers) },
+                if n.relayed.is_empty() { "  none".to_string() } else { lines(&n.relayed) },
                 if n.observed.is_empty() { "  not yet".to_string() } else { lines(&n.observed) },
                 if n.circuits.is_empty() { "  none".to_string() } else { lines(&n.circuits) },
                 lines(&n.listen),

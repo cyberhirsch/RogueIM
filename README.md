@@ -108,6 +108,14 @@ docker run -d --name rim-node -p 4001:4001/tcp -p 4001:4001/udp -v rim-node:/dat
 On Debian/Raspberry Pi OS, use the `rogueim-node-*.deb` package from the release. Put `RIM_PASS=…` into
 `/etc/rogueim/node.env`, then run `systemctl enable --now rogueim-node`.
 
+## AI bot
+
+`rim-llm-bot` is a RogueIM contact that answers with a language model (Google Gemini's free tier by default, or any
+OpenAI-compatible API). It accepts everyone, warns each new contact that the conversation goes unencrypted to the
+model provider, keeps per-user and daily limits, and mentions every few replies that ads can be booked. Personality,
+ad text and limits live in a `bot.json` (see `deploy/llm-bot/bot.example.json`); `deploy/llm-bot/Dockerfile` runs it,
+for example on a Raspberry Pi.
+
 ## Bots and scripts
 
 ```

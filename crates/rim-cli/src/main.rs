@@ -191,7 +191,10 @@ fn main() {
                     println!("relay circuit: {a}");
                 }
                 for p in &n.peers {
-                    println!("peer: {p}");
+                    println!("direct: {p}");
+                }
+                for p in &n.relayed {
+                    println!("via relay: {p}");
                 }
             }
             Event::Call(v) => {

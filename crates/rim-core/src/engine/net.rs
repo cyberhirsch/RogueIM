@@ -239,6 +239,17 @@ impl Engine {
         self.flush_all_outboxes();
     }
 
+    /// "name  …last8" for the diagnostics.
+    fn peer_label(&self, p: &PeerId) -> String {
+        let s = p.to_string();
+        let who = match self.owner_of_peer(&s).as_deref() {
+            Some("self") => "own device".to_string(),
+            Some(id) => self.contact(id).map(|c| c.petname.clone()).unwrap_or_else(|| "group member".into()),
+            None => "network".into(),
+        };
+        format!("{who}  {}", &s[s.len().saturating_sub(8)..])
+    }
+
     pub fn emit_net(&self) {
         let v = NetView {
             peer_id: self.peer_id.to_string(),
@@ -251,19 +262,8 @@ impl Engine {
             helper: self.p.net.helper || self.node,
             held: self.p.held.len(),
             mailbox_last_fetch: self.last_mail_fetch,
-            peers: self
-                .swarm
-                .connected_peers()
-                .map(|p| {
-                    let s = p.to_string();
-                    let who = match self.owner_of_peer(&s).as_deref() {
-                        Some("self") => "own device".to_string(),
-                        Some(id) => self.contact(id).map(|c| c.petname.clone()).unwrap_or_else(|| "group member".into()),
-                        None => "network".into(),
-                    };
-                    format!("{who}  {}", &s[s.len().saturating_sub(8)..])
-                })
-                .collect(),
+            peers: self.swarm.connected_peers().filter(|p| self.files_rt.direct.contains(p)).map(|p| self.peer_label(p)).collect(),
+            relayed: self.swarm.connected_peers().filter(|p| !self.files_rt.direct.contains(p)).map(|p| self.peer_label(p)).collect(),
             circuits: self.external.iter().filter(|a| is_relayed(a)).map(|a| a.to_string()).collect(),
             observed: self.observed.iter().map(|a| a.to_string()).collect(),
             bandwidth_kbps: self.p.net.bandwidth_kbps,
