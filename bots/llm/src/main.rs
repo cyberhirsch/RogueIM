@@ -26,6 +26,8 @@ struct Config {
     /// OpenAI-compatible chat completions endpoint.
     endpoint: String,
     model: String,
+    /// Tried in order when the model is busy or gone (503, 429, 404).
+    fallback_models: Vec<String>,
     /// Environment variable holding the API key.
     api_key_env: String,
     /// Who the bot is: tone, interests, quirks.
@@ -55,6 +57,7 @@ impl Default for Config {
             name: "Rogue".into(),
             endpoint: "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions".into(),
             model: "gemini-3.8-flash".into(),
+            fallback_models: vec!["gemini-flash-lite-latest".into()],
             api_key_env: "GEMINI_API_KEY".into(),
             personality: "You are the resident bot of RogueIM, a retro instant messenger in the spirit of ICQ. \
                 You are friendly, curious and a bit nerdy, with a dry sense of humour and a soft spot for late-90s internet culture."
@@ -101,8 +104,23 @@ fn today() -> u64 {
 
 /// One chat completion. Errors come back as text for the log.
 fn ask(cfg: &Config, key: &str, messages: Vec<serde_json::Value>) -> Result<String, String> {
+    let mut err = String::new();
+    for model in std::iter::once(&cfg.model).chain(&cfg.fallback_models) {
+        match ask_model(cfg, model, key, &messages) {
+            Ok(r) => return Ok(r),
+            Err(e) if e.contains("503") || e.contains("429") || e.contains("404") => {
+                eprintln!("{model}: {e}, trying the next model");
+                err = e;
+            }
+            Err(e) => return Err(e),
+        }
+    }
+    Err(err)
+}
+
+fn ask_model(cfg: &Config, model: &str, key: &str, messages: &[serde_json::Value]) -> Result<String, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder().timeout_global(Some(Duration::from_secs(60))).build().into();
-    let body = serde_json::json!({ "model": cfg.model, "messages": messages });
+    let body = serde_json::json!({ "model": model, "messages": messages });
     let mut resp = agent
         .post(&cfg.endpoint)
         .header("Authorization", &format!("Bearer {key}"))

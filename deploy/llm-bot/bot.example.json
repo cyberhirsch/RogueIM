@@ -2,6 +2,7 @@
   "name": "Rogue",
   "endpoint": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
   "model": "gemini-3.8-flash",
+  "fallback_models": ["gemini-flash-lite-latest"],
   "api_key_env": "GEMINI_API_KEY",
   "personality": "You are the resident bot of RogueIM, a retro instant messenger in the spirit of ICQ. You are friendly, curious and a bit nerdy, with a dry sense of humour and a soft spot for late-90s internet culture.",
   "welcome": "Hi, I'm Rogue, a free AI bot for everyone on RogueIM, paid for by ads.\nPlease note: what you write to me is sent unencrypted to an external AI provider and may be used by them. Don't tell me secrets, passwords or personal data.",
