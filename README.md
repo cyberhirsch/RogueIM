@@ -112,7 +112,9 @@ On Debian/Raspberry Pi OS, use the `rogueim-node-*.deb` package from the release
 
 `rim-llm-bot` is a RogueIM contact that answers with a language model (Google Gemini's free tier by default, or any
 OpenAI-compatible API). It accepts everyone, warns each new contact that the conversation goes unencrypted to the
-model provider, keeps per-user and daily limits, and mentions every few replies that ads can be booked. Personality,
+model provider, keeps per-user and daily limits, and mentions every few replies that ads can be booked. Writing
+`ads` explains the offer; `ad: <text> / <contact>` stores an ad request in `ad-requests.jsonl` next to the bot's
+profile (time, name, fingerprint, text) for the operator to review. Personality,
 ad text and limits live in a `bot.json` (see `deploy/llm-bot/bot.example.json`); `deploy/llm-bot/Dockerfile` runs it,
 for example on a Raspberry Pi.
 

@@ -58,7 +58,7 @@ impl Default for Config {
                 Please note: what you write to me is sent unencrypted to an AI provider (Google Gemini) and may be used by them. \
                 Don't tell me secrets, passwords or personal data."
                 .into(),
-            ad_text: "Your ad here: reach RogueIM users by booking an ad with this bot. Just write \"ads\" to learn more.".into(),
+            ad_text: "Your ad here: reach RogueIM users with one line like this. Write \"ads\" to learn how.".into(),
             ad_every: 8,
             per_user_per_hour: 30,
             per_day: 800,
@@ -81,6 +81,10 @@ struct Chat {
 struct State {
     chats: HashMap<String, Chat>,
     welcomed: HashSet<String>,
+    /// Where ad requests are kept (one JSON object per line).
+    ads_file: PathBuf,
+    /// Ad requests per contact today.
+    ad_requests: HashMap<String, usize>,
     day: u64,
     today: usize,
 }
@@ -104,6 +108,63 @@ fn ask(cfg: &Config, key: &str, messages: Vec<serde_json::Value>) -> Result<Stri
 
 fn handle(cfg: &Config, key: &str, h: &EngineHandle, st: &Arc<Mutex<State>>, id: String, name: String, text: String) {
     let say = |t: &str| h.send(Command::SendText { id: id.clone(), body: t.to_string(), reply_to: None, urgent: false });
+
+    // Ad requests: handled here, never sent to the model, not counted as chat.
+    let t = text.trim();
+    if t.eq_ignore_ascii_case("ads") || t.eq_ignore_ascii_case("ad") {
+        say("Ads on this bot: one short line of text, shown to RogueIM users every few replies.\n\
+             To request one, write   ad: <your ad text> / <how we can reach you>\n\
+             The operator reviews every request and answers you here.");
+        return;
+    }
+    if t.get(..3).map(|p| p.eq_ignore_ascii_case("ad:")).unwrap_or(false) {
+        let ad = t[3..].trim();
+        if ad.chars().count() < 10 {
+            say("Please add the ad text, e.g.   ad: Retro keyboards at example.org / write me here");
+            return;
+        }
+        if ad.chars().count() > 600 {
+            say("That is a bit long: an ad is one short line (at most 600 characters).");
+            return;
+        }
+        let mut s = st.lock().unwrap();
+        if s.day != today() {
+            s.day = today();
+            s.today = 0;
+            s.ad_requests.clear();
+        }
+        let n = s.ad_requests.entry(id.clone()).or_default();
+        if *n >= 3 {
+            drop(s);
+            say("You have sent 3 ad requests today already; the operator will get back to you.");
+            return;
+        }
+        *n += 1;
+        let entry = serde_json::json!({
+            "time": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0),
+            "contact": id,
+            "name": name,
+            "fingerprint": rim_core::identity::pretty_fingerprint(&id),
+            "ad": ad,
+        });
+        let saved = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&s.ads_file)
+            .and_then(|mut f| std::io::Write::write_all(&mut f, format!("{entry}\n").as_bytes()));
+        drop(s);
+        match saved {
+            Ok(()) => {
+                println!("ad request from {name}: {ad}");
+                say("Thanks! Your ad request is saved. The operator will contact you here in RogueIM.");
+            }
+            Err(e) => {
+                eprintln!("could not save ad request: {e}");
+                say("Sorry, I could not save that right now. Please try again later.");
+            }
+        }
+        return;
+    }
 
     // Limits first, so a busy day never costs more than planned.
     let (history, ad) = {
@@ -135,10 +196,6 @@ fn handle(cfg: &Config, key: &str, h: &EngineHandle, st: &Arc<Mutex<State>>, id:
         (history, ad)
     };
 
-    if text.trim().eq_ignore_ascii_case("ads") {
-        say("Ads on this bot: a short text line shown to RogueIM users every few replies. Write to the operator of this bot to book one.");
-        return;
-    }
     if text.trim().is_empty() {
         say("I can only read text, sorry.");
         return;
@@ -226,9 +283,10 @@ fn main() {
     };
 
     let welcomed_file = dir.join("welcomed.json");
+    let ads_file = dir.join("ad-requests.jsonl");
     let welcomed: HashSet<String> = std::fs::read(&welcomed_file).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
     let (h, rx) = spawn(EngineConfig { dir, passphrase: pass, nick: Some(cfg.name.clone()), port, bot: true, mode: StartMode::Auto, ..Default::default() });
-    let st = Arc::new(Mutex::new(State { chats: HashMap::new(), welcomed, day: today(), today: 0 }));
+    let st = Arc::new(Mutex::new(State { chats: HashMap::new(), welcomed, ads_file, ad_requests: HashMap::new(), day: today(), today: 0 }));
     let cfg = Arc::new(cfg);
     let key = Arc::new(key);
 
