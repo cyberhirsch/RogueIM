@@ -100,6 +100,9 @@ export component ChatPane inherits Rectangle {
     property <string> editing-id;
     property <bool> scroll-pending;
     changed lines => { root.scroll-pending = true; }
+    // The model stays the same while rows are added, so watch the row count too.
+    property <int> line-count: root.lines.length;
+    changed line-count => { root.scroll-pending = true; }
     Timer {
         interval: 40ms;
         running: root.scroll-pending;
