@@ -35,7 +35,7 @@ const ON_SCREEN_ONLY: u32 = 1;
 const EXCLUDE_DESKTOP: u32 = 16;
 
 #[link(name = "ApplicationServices", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn AXIsProcessTrusted() -> bool;
     fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
     fn AXUIElementCopyAttributeValue(el: AXUIElementRef, attr: CFStringRef, value: *mut CFTypeRef) -> i32;
@@ -45,12 +45,12 @@ extern "C" {
 }
 
 #[link(name = "CoreGraphics", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CGWindowListCopyWindowInfo(option: u32, relative: u32) -> CFArrayRef;
 }
 
 #[link(name = "CoreFoundation", kind = "framework")]
-extern "C" {
+unsafe extern "C" {
     fn CFStringCreateWithBytes(alloc: CFTypeRef, bytes: *const u8, len: isize, enc: u32, external: bool) -> CFStringRef;
     fn CFArrayGetCount(a: CFArrayRef) -> isize;
     fn CFArrayGetValueAtIndex(a: CFArrayRef, i: isize) -> CFTypeRef;
@@ -110,32 +110,41 @@ fn window_pids() -> Vec<i32> {
 }
 
 /// Read a point or size attribute.
-unsafe fn get<T: Default>(el: AXUIElementRef, attr: &Str, kind: u32) -> Option<T> {
-    let mut v: CFTypeRef = std::ptr::null();
-    if AXUIElementCopyAttributeValue(el, attr.0, &mut v) != 0 || v.is_null() {
-        return None;
-    }
-    let mut out = T::default();
-    let ok = AXValueGetValue(v, kind, &mut out as *mut T as *mut c_void);
-    CFRelease(v);
-    ok.then_some(out)
-}
-
-unsafe fn flag(el: AXUIElementRef, attr: &Str) -> bool {
-    let mut v: CFTypeRef = std::ptr::null();
-    if AXUIElementCopyAttributeValue(el, attr.0, &mut v) != 0 || v.is_null() {
-        return false;
-    }
-    let b = CFBooleanGetValue(v);
-    CFRelease(v);
-    b
-}
-
-unsafe fn set<T>(el: AXUIElementRef, attr: &Str, kind: u32, value: &T) {
-    let v = AXValueCreate(kind, value as *const T as *const c_void);
-    if !v.is_null() {
-        AXUIElementSetAttributeValue(el, attr.0, v);
+fn get<T: Default>(el: AXUIElementRef, attr: &Str, kind: u32) -> Option<T> {
+    // SAFETY: `el` is a live AX element; the copied value is released here.
+    unsafe {
+        let mut v: CFTypeRef = std::ptr::null();
+        if AXUIElementCopyAttributeValue(el, attr.0, &mut v) != 0 || v.is_null() {
+            return None;
+        }
+        let mut out = T::default();
+        let ok = AXValueGetValue(v, kind, &mut out as *mut T as *mut c_void);
         CFRelease(v);
+        ok.then_some(out)
+    }
+}
+
+fn flag(el: AXUIElementRef, attr: &Str) -> bool {
+    // SAFETY: as in `get`.
+    unsafe {
+        let mut v: CFTypeRef = std::ptr::null();
+        if AXUIElementCopyAttributeValue(el, attr.0, &mut v) != 0 || v.is_null() {
+            return false;
+        }
+        let b = CFBooleanGetValue(v);
+        CFRelease(v);
+        b
+    }
+}
+
+fn set<T>(el: AXUIElementRef, attr: &Str, kind: u32, value: &T) {
+    // SAFETY: `value` matches `kind` (CGPoint or CGSize); the AXValue is released here.
+    unsafe {
+        let v = AXValueCreate(kind, value as *const T as *const c_void);
+        if !v.is_null() {
+            AXUIElementSetAttributeValue(el, attr.0, v);
+            CFRelease(v);
+        }
     }
 }
 
