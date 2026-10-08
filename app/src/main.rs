@@ -1366,7 +1366,7 @@ fn handle_event(app: &AppRc, ev: Event) {
             let (busy, open, notify, popups) = {
                 let a = app.borrow();
                 let open = a.docked_chat.as_deref() == Some(id.as_str()) || a.chats.get(&id).map(|w| w.window().is_visible()).unwrap_or(false);
-                (a.my_status.is_busy(), open, a.settings.notify, a.settings.popups)
+                (a.my_status.is_busy(), open, a.settings.notify, a.settings.popups || a.hidden)
             };
             app.borrow_mut().last_incoming = Some(id.clone());
             if !busy || urgent {
@@ -1380,15 +1380,21 @@ fn handle_event(app: &AppRc, ev: Event) {
             }
         }
         Event::GroupIncoming { group, name, from, .. } => {
-            let (busy, notify) = {
+            let key = format!("g:{group}");
+            let (busy, notify, hidden, open) = {
                 let a = app.borrow();
-                (a.my_status.is_busy(), a.settings.notify)
+                let open = a.docked_chat.as_deref() == Some(key.as_str()) || a.chats.get(&key).map(|w| w.window().is_visible()).unwrap_or(false);
+                (a.my_status.is_busy(), a.settings.notify, a.hidden, open)
             };
-            app.borrow_mut().last_incoming = Some(format!("g:{group}"));
+            app.borrow_mut().last_incoming = Some(key.clone());
             if !busy {
                 play(app, desktop::Sound::Message);
                 if notify {
                     desktop::notify(&name, &format!("New message from {from}"));
+                }
+                // Minimized to the tray: the chat comes up by itself.
+                if hidden && !open {
+                    open_chat(app, &key);
                 }
             }
         }
@@ -2316,6 +2322,14 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
     });
     let ap = app.clone();
     main.on_quit(move || shutdown(&ap));
+    let ap = app.clone();
+    main.on_minimize(move || {
+        if ap.borrow().tray.is_some() {
+            set_hidden(&ap, true);
+        } else if let Some(m) = ap.borrow().main.upgrade() {
+            m.window().set_minimized(true);
+        }
+    });
     let ap = app.clone();
     main.window().on_close_requested(move || {
         shutdown(&ap);

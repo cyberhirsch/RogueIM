@@ -277,6 +277,7 @@ export component MainWindow inherits Window {
     callback remove-contact(string);
     callback move-dock(int);
     callback quit();
+    callback minimize();
     callback set-theme(string);
     callback setting-toggled(string);
     callback save-general();
@@ -441,6 +442,7 @@ export component MainWindow inherits Window {
             Rectangle { }
             TButton { glyph: "<"; tip: "move the bar one screen edge to the left"; clicked => { if (root.can-move-left) { root.move-dock(-1); } } }
             TButton { glyph: ">"; tip: "move the bar one screen edge to the right"; clicked => { if (root.can-move-right) { root.move-dock(1); } } }
+            TButton { glyph: "_"; tip: "minimize to the tray (new messages then always pop up)"; clicked => { root.minimize(); } }
             TButton { glyph: "x"; danger: true; tip: "quit RogueIM"; clicked => { root.quit(); } }
         }
 
