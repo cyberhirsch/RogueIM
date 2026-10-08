@@ -144,6 +144,7 @@ export component MainWindow inherits Window {
     in-out property <bool> s-autostart;
     in-out property <bool> s-autohide;
     in-out property <bool> s-on-top: true;
+    in-out property <bool> s-make-room;
     in property <bool> is-mac;
     in-out property <string> s-auto-away: "10";
     in-out property <string> s-auto-na: "30";
@@ -797,6 +798,8 @@ export component MainWindow inherits Window {
                     }
                     RCheck { text: "auto-hide the bar"; checked <=> root.s-autohide; toggled => { root.setting-toggled("autohide"); } }
                     if root.is-mac: RCheck { text: "keep the bar in front of other windows"; checked <=> root.s-on-top; toggled => { root.setting-toggled("on-top"); } }
+                    if root.is-mac: RCheck { text: "make room: move other windows beside the bar"; checked <=> root.s-make-room; toggled => { root.setting-toggled("make-room"); } }
+                    if root.is-mac && root.s-make-room: RCaption { text: "Needs RogueIM under System Settings → Privacy & Security → Accessibility. Windows that reach under the bar are moved or narrowed about once a second; full-screen windows are left alone."; wrap: word-wrap; }
                     HorizontalLayout {
                         spacing: 4px;
                         RCaption { text: "bar width (px, or drag its inner edge)"; vertical-alignment: center; }

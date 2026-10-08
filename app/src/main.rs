@@ -4,6 +4,8 @@
 //! always on top, chats in their own windows or docked into the bar.
 
 mod bots;
+#[cfg(target_os = "macos")]
+mod makeroom;
 mod desktop;
 mod dock;
 mod plugins;
@@ -80,6 +82,8 @@ struct Settings {
     rogue_added: bool,
     /// macOS: keep the bar above other windows (it cannot reserve screen space there).
     on_top: bool,
+    /// macOS: move other apps' windows out from under the bar.
+    make_room: bool,
     /// Local AI bots (their API keys are in the OS keychain).
     bots: Vec<bots::LocalBot>,
     /// The local script API (JSON lines over a local socket).
@@ -123,6 +127,7 @@ impl Default for Settings {
             update_auto: false,
             rogue: true,
             on_top: true,
+            make_room: false,
             rogue_added: false,
             bots: vec![],
             api: false,
@@ -286,6 +291,8 @@ struct App {
     bot_rx: Receiver<(String, String)>,
     bot_line: u64,
     api: Option<bots::Api>,
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    last_room: Instant,
 }
 
 type AppRc = Rc<RefCell<App>>;
@@ -1607,6 +1614,29 @@ fn on_unlocked(app: &AppRc, ev: Event) {
     refresh_bot_rows(app);
 }
 
+// ================================================================ make room (macOS)
+
+/// About once a second, fit other windows beside the docked bar.
+fn poll_make_room(app: &AppRc) {
+    #[cfg(target_os = "macos")]
+    {
+        let (m, left, pref, bar) = {
+            let mut a = app.borrow_mut();
+            let st = &a.settings;
+            if !st.make_room || st.autohide || a.hidden || a.collapsed || a.last_room.elapsed() < Duration::from_millis(1000) {
+                return;
+            }
+            a.last_room = Instant::now();
+            let Some(m) = a.main.upgrade() else { return };
+            (m, a.settings.dock_left, a.settings.monitor.clone(), a.settings.bar_width.clamp(MIN_BAR, MAX_BAR) as f32)
+        };
+        let Some(mon) = dock::pick(m.window(), &pref) else { return };
+        let px = (bar * mon.dpi as f32 / 96.0).round() as i32;
+        makeroom::make_room(&mon, px, left);
+    }
+    let _ = app;
+}
+
 // ================================================================ bots
 
 fn host_of(url: &str) -> String {
@@ -1954,6 +1984,7 @@ fn main() {
     main.set_s_autostart(settings.autostart);
     main.set_s_autohide(settings.autohide);
     main.set_is_mac(cfg!(target_os = "macos"));
+    main.set_s_make_room(settings.make_room);
     main.set_s_on_top(settings.on_top || !cfg!(target_os = "macos"));
     main.set_s_auto_away(settings.auto_away.to_string().into());
     main.set_s_auto_na(settings.auto_na.to_string().into());
@@ -2027,6 +2058,7 @@ fn main() {
         bot_rx,
         bot_line: 1 << 60,
         api: None,
+        last_room: Instant::now(),
     }));
     for e in register_hotkeys(&app) {
         eprintln!("hotkey {e}");
@@ -2069,6 +2101,7 @@ fn main() {
             poll_links(&app);
             poll_update(&app);
             poll_bots(&app);
+            poll_make_room(&app);
             let expired = app.borrow().notice_until.map(|t| Instant::now() > t).unwrap_or(false);
             if expired {
                 app.borrow_mut().notice_until = None;
@@ -2590,10 +2623,17 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
                 "autostart" => {
                     a.settings.autostart = m.get_s_autostart();
                     if let Err(e) = desktop::set_autostart(&a.profile, a.settings.autostart) {
-                        err = Some(e);
+                        err = Some(format!("Autostart: {e}"));
                     }
                 }
                 "on-top" => a.settings.on_top = m.get_s_on_top(),
+                "make-room" => {
+                    a.settings.make_room = m.get_s_make_room();
+                    #[cfg(target_os = "macos")]
+                    if a.settings.make_room && !makeroom::trusted() {
+                        err = Some("Allow RogueIM under System Settings → Privacy & Security → Accessibility.".into());
+                    }
+                }
                 "autohide" => {
                     a.settings.autohide = m.get_s_autohide();
                     redock_needed = true;
@@ -2606,7 +2646,7 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
             save_settings(&a.dir, &a.settings);
         }
         if let Some(e) = err {
-            notice(&ap, &format!("Autostart: {e}"));
+            notice(&ap, &e);
         }
         rebuild_contacts(&ap);
         if redock_needed {
