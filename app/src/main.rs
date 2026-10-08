@@ -78,6 +78,8 @@ struct Settings {
     /// Rogue, the public AI contact: wanted, and whether it was added once already.
     rogue: bool,
     rogue_added: bool,
+    /// macOS: keep the bar above other windows (it cannot reserve screen space there).
+    on_top: bool,
     /// Local AI bots (their API keys are in the OS keychain).
     bots: Vec<bots::LocalBot>,
     /// The local script API (JSON lines over a local socket).
@@ -120,6 +122,7 @@ impl Default for Settings {
             update_check: true,
             update_auto: false,
             rogue: true,
+            on_top: true,
             rogue_added: false,
             bots: vec![],
             api: false,
@@ -1950,6 +1953,8 @@ fn main() {
     main.set_s_popups(settings.popups);
     main.set_s_autostart(settings.autostart);
     main.set_s_autohide(settings.autohide);
+    main.set_is_mac(cfg!(target_os = "macos"));
+    main.set_s_on_top(settings.on_top || !cfg!(target_os = "macos"));
     main.set_s_auto_away(settings.auto_away.to_string().into());
     main.set_s_auto_na(settings.auto_na.to_string().into());
     main.set_s_lock_idle(settings.lock_idle.to_string().into());
@@ -2588,6 +2593,7 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
                         err = Some(e);
                     }
                 }
+                "on-top" => a.settings.on_top = m.get_s_on_top(),
                 "autohide" => {
                     a.settings.autohide = m.get_s_autohide();
                     redock_needed = true;

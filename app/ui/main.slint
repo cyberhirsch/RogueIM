@@ -82,7 +82,7 @@ export component MainWindow inherits Window {
     min-width: 4px;
     min-height: 200px;
     no-frame: root.docked;
-    always-on-top: true;
+    always-on-top: root.s-on-top;
     background: Theme.bg;
     default-font-family: Theme.font;
     default-font-size: Theme.fs;
@@ -143,6 +143,8 @@ export component MainWindow inherits Window {
     in-out property <bool> s-popups: true;
     in-out property <bool> s-autostart;
     in-out property <bool> s-autohide;
+    in-out property <bool> s-on-top: true;
+    in property <bool> is-mac;
     in-out property <string> s-auto-away: "10";
     in-out property <string> s-auto-na: "30";
     in-out property <string> s-lock-idle: "0";
@@ -794,6 +796,7 @@ export component MainWindow inherits Window {
                         RCaption { text: root.update-status; vertical-alignment: center; wrap: word-wrap; }
                     }
                     RCheck { text: "auto-hide the bar"; checked <=> root.s-autohide; toggled => { root.setting-toggled("autohide"); } }
+                    if root.is-mac: RCheck { text: "keep the bar in front of other windows"; checked <=> root.s-on-top; toggled => { root.setting-toggled("on-top"); } }
                     HorizontalLayout {
                         spacing: 4px;
                         RCaption { text: "bar width (px, or drag its inner edge)"; vertical-alignment: center; }
