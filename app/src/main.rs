@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use rim_core::engine::{RestoreSecret, StartMode};
 use rim_core::store::Store;
 use rim_core::*;
-use rim_plugin_sdk::{Item, ToHost, ToPlugin};
+use rim_plugin_sdk::{Item, NetContact, NetLine, ToHost, ToPlugin};
 use slint::{CloseRequestResponse, Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use time::UtcOffset;
 
@@ -88,6 +88,8 @@ struct Settings {
     bots: Vec<bots::LocalBot>,
     /// The local script API (JSON lines over a local socket).
     api: bool,
+    /// Plugins whose unencrypted channel the user agreed to send on (PRD TH-3).
+    plain_ok: Vec<String>,
 }
 
 impl Default for Settings {
@@ -131,6 +133,7 @@ impl Default for Settings {
             rogue_added: false,
             bots: vec![],
             api: false,
+            plain_ok: vec![],
         }
     }
 }
@@ -291,6 +294,8 @@ struct App {
     bot_rx: Receiver<(String, String)>,
     bot_line: u64,
     api: Option<bots::Api>,
+    /// Other networks brought in by plugins (PRD §7.13), by plugin id.
+    nets: HashMap<String, Net>,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     last_room: Instant,
 }
@@ -311,11 +316,14 @@ impl App {
     }
 }
 
-fn fmt_time(ts: i64, off: UtcOffset) -> String {
-    time::OffsetDateTime::from_unix_timestamp(ts)
-        .map(|t| t.to_offset(off))
-        .map(|t| format!("{:02}:{:02}", t.hour(), t.minute()))
-        .unwrap_or_default()
+/// Time of a chat line, with the date when it isn't from today (old mail, history).
+fn fmt_line_time(ts: i64, off: UtcOffset) -> String {
+    let today = time::OffsetDateTime::now_utc().to_offset(off).date();
+    match time::OffsetDateTime::from_unix_timestamp(ts).map(|t| t.to_offset(off)) {
+        Ok(t) if t.date() == today => format!("{:02}:{:02}", t.hour(), t.minute()),
+        Ok(t) => format!("{:02}.{:02}. {:02}:{:02}", t.day(), t.month() as u8, t.hour(), t.minute()),
+        Err(_) => String::new(),
+    }
 }
 
 fn fmt_date(ts: i64, off: UtcOffset) -> String {
@@ -351,7 +359,7 @@ fn chat_line(app: &App, l: &LineView) -> ChatLine {
     let f = l.file.as_ref().map(|f| app.files.get(&f.id).cloned().unwrap_or_else(|| f.clone()));
     ChatLine {
         id: l.id.to_string().into(),
-        time: fmt_time(l.ts, app.offset).into(),
+        time: fmt_line_time(l.ts, app.offset).into(),
         who: l.who.clone().into(),
         text: l.text.clone().into(),
         mine: l.from_me,
@@ -414,6 +422,8 @@ fn mode_of(key: &str) -> &'static str {
         "group"
     } else if key.starts_with("b:") {
         "bot"
+    } else if key.starts_with("n:") {
+        "net"
     } else {
         "contact"
     }
@@ -431,6 +441,11 @@ struct Header {
     info: String,
     typing: bool,
     authorized: bool,
+    /// Transport honesty (PRD TH-2): banner, its colour, the tag next to the input and the input hint.
+    warn: String,
+    warn_color: Color,
+    tag: String,
+    hint: String,
 }
 
 fn header_for(app: &App, key: &str) -> Header {
@@ -448,12 +463,55 @@ fn header_for(app: &App, key: &str) -> Header {
         info: info.into(),
         typing: false,
         authorized: true,
+        warn: String::new(),
+        warn_color: acc,
+        tag: String::new(),
+        hint: String::new(),
     };
     match mode_of(key) {
         "notes" => empty("note to self", "synced to your devices", "notes", ""),
         "bot" => match app.settings.bots.iter().find(|b| bots::key(&b.name) == key) {
             Some(b) => empty(&b.name, &format!("local AI bot · {}", b.model), "bot", &format!("goes from this computer to {}", host_of(&b.endpoint))),
             None => empty("bot", "removed", "bot", ""),
+        },
+        "net" => match net_key(key).and_then(|(p, id)| Some((app.nets.get(p)?, id))) {
+            Some((n, id)) => {
+                let col = level_color(app, &n.level);
+                let mut h = match n.contacts.iter().find(|c| c.id == id) {
+                    Some(c) => Header {
+                        name: c.name.clone(),
+                        fp: String::new(),
+                        status: if c.status.is_empty() { n.label.clone() } else { format!("{} · {}", n.label, c.status) },
+                        tint: col,
+                        os: net_os(&n.label),
+                        device: net_device(&n.label).into(),
+                        badge: String::new(),
+                        away: String::new(),
+                        info: c.info.clone(),
+                        typing: false,
+                        authorized: true,
+                        warn: String::new(),
+                        warn_color: col,
+                        tag: String::new(),
+                        hint: String::new(),
+                    },
+                    None => {
+                        let mut h = empty(id, "not on the list any more", net_device(&n.label), "");
+                        h.authorized = false;
+                        h
+                    }
+                };
+                h.warn = n.warning.clone();
+                h.warn_color = col;
+                h.tag = n.label.clone();
+                h.hint = format!("{} · {}", n.label, if n.level == "D" { "not encrypted" } else { "not RIM-encrypted" });
+                h
+            }
+            None => {
+                let mut h = empty("?", "its plugin is not running", "net", "");
+                h.authorized = false;
+                h
+            }
         },
         "group" => match app.groups.iter().find(|g| format!("g:{}", g.id) == key) {
             Some(g) => empty(&g.name, &format!("{} members", g.members.len()), "group", "megolm"),
@@ -481,6 +539,11 @@ fn header_for(app: &App, key: &str) -> Header {
                 .join(" · "),
                 typing: c.typing,
                 authorized: !c.awaiting,
+                // Rogue passes what it gets on to an AI provider (PRD TH-6).
+                warn: if is_rogue(app, &c.id) { "end-to-end encrypted to Rogue only: Rogue passes your messages to an AI provider, who can read them. Don't share secrets.".into() } else { String::new() },
+                warn_color: tint(Status::Away, dark),
+                tag: if is_rogue(app, &c.id) { "AI".into() } else { String::new() },
+                hint: String::new(),
             },
             None => {
                 let mut h = empty("?", "", "", "");
@@ -516,6 +579,10 @@ fn apply_header_window(w: &ChatWindow, h: &Header) {
     w.set_info(h.info.clone().into());
     w.set_typing(h.typing);
     w.set_authorized(h.authorized);
+    w.set_warn(h.warn.clone().into());
+    w.set_warn_color(h.warn_color);
+    w.set_tag(h.tag.clone().into());
+    w.set_compose_hint(h.hint.clone().into());
 }
 
 fn apply_header_docked(m: &MainWindow, h: &Header) {
@@ -529,6 +596,10 @@ fn apply_header_docked(m: &MainWindow, h: &Header) {
     m.set_dchat_info(h.info.clone().into());
     m.set_dchat_typing(h.typing);
     m.set_dchat_authorized(h.authorized);
+    m.set_dchat_warn(h.warn.clone().into());
+    m.set_dchat_warn_color(h.warn_color);
+    m.set_dchat_tag(h.tag.clone().into());
+    m.set_dchat_hint(h.hint.clone().into());
 }
 
 fn refresh_chat(app: &AppRc, key: &str) {
@@ -590,6 +661,11 @@ fn request_history(app: &AppRc, key: &str) {
     match mode_of(key) {
         "notes" => a.send(Command::OpenNotes),
         "bot" => {}
+        "net" => {
+            if let Some((p, id)) = net_key(key) {
+                a.host.send(p, &ToPlugin::Open { chat: id.to_string() });
+            }
+        }
         "group" => a.send(Command::OpenGroup { group: key[2..].to_string() }),
         _ => a.send(Command::OpenChat { id: key.to_string() }),
     }
@@ -600,6 +676,11 @@ fn close_history(app: &AppRc, key: &str) {
     match mode_of(key) {
         "group" => a.send(Command::CloseGroup { group: key[2..].to_string() }),
         "contact" => a.send(Command::CloseChat { id: key.to_string() }),
+        "net" => {
+            if let Some((p, id)) = net_key(key) {
+                a.host.send(p, &ToPlugin::Close { chat: id.to_string() });
+            }
+        }
         _ => {}
     }
 }
@@ -607,6 +688,10 @@ fn close_history(app: &AppRc, key: &str) {
 fn chat_send(app: &AppRc, key: &str, text: &str, urgent: bool, reply: &str) {
     if mode_of(key) == "bot" {
         bot_send(app, key, text);
+        return;
+    }
+    if mode_of(key) == "net" {
+        net_send(app, key, text);
         return;
     }
     let a = app.borrow();
@@ -663,7 +748,7 @@ fn chat_edit(app: &AppRc, key: &str, id: &str, text: &str) {
 }
 
 fn chat_file_send(app: &AppRc, key: &str) {
-    if matches!(mode_of(key), "group" | "bot") {
+    if matches!(mode_of(key), "group" | "bot" | "net") {
         return;
     }
     let Some(path) = rfd::FileDialog::new().set_title("Send a file (direct connection only)").pick_file() else { return };
@@ -957,6 +1042,24 @@ fn rebuild_contacts(app: &AppRc) {
         rows.push(header(&f, list.len()));
         if !collapsed(&f) {
             rows.extend(list.into_iter().map(row));
+        }
+    }
+    // Other networks (PRD §7.13), each in its own folder below the RIM contacts,
+    // never looking like a RIM contact (TH-4).
+    let mut nets: Vec<(&String, &Net)> = a.nets.iter().collect();
+    nets.sort_by_key(|(p, _)| a.settings.plugins.iter().position(|x| x == *p).unwrap_or(usize::MAX));
+    for (p, n) in nets {
+        rows.push(header(&n.label, n.contacts.len()));
+        if collapsed(&n.label) {
+            continue;
+        }
+        let col = level_color(&a, &n.level);
+        for c in &n.contacts {
+            let mut r = plain_row("net", &format!("n:{p}:{}", c.id), &c.name, net_device(&n.label), col);
+            r.os = net_os(&n.label).into();
+            r.status = if c.status.is_empty() { c.info.clone() } else { c.status.clone() }.into();
+            r.unread = c.unread as i32;
+            rows.push(r);
         }
     }
     m.set_contacts(ModelRc::new(VecModel::from(rows)));
@@ -1373,21 +1476,7 @@ fn handle_event(app: &AppRc, ev: Event) {
             if let Some(api) = &app.borrow().api {
                 api.message(&name, &text, urgent);
             }
-            let (busy, open, notify, popups) = {
-                let a = app.borrow();
-                let open = a.docked_chat.as_deref() == Some(id.as_str()) || a.chats.get(&id).map(|w| w.window().is_visible()).unwrap_or(false);
-                (a.my_status.is_busy(), open, a.settings.notify, a.settings.popups || a.hidden)
-            };
-            app.borrow_mut().last_incoming = Some(id.clone());
-            if !busy || urgent {
-                play(app, if urgent { desktop::Sound::Urgent } else { desktop::Sound::Message });
-                if notify && !open {
-                    desktop::notify(&format!("{}{name}", if urgent { "URGENT · " } else { "" }), "New message");
-                }
-                if popups && !open {
-                    open_chat(app, &id);
-                }
-            }
+            alert_incoming(app, &id, &format!("{}{name}", if urgent { "URGENT · " } else { "" }), urgent);
         }
         Event::GroupIncoming { group, name, from, .. } => {
             let key = format!("g:{group}");
@@ -1453,8 +1542,16 @@ fn handle_event(app: &AppRc, ev: Event) {
                 let a = app.borrow();
                 if a.plugin_net.is_empty() { "  none".to_string() } else { a.plugin_net.iter().map(|(p, h, why)| format!("  {p} → {h} ({why})")).collect::<Vec<_>>().join("\n") }
             };
+            let nets = {
+                let a = app.borrow();
+                if a.nets.is_empty() {
+                    "  none".to_string()
+                } else {
+                    a.nets.values().map(|n| format!("  {}: {} · {} contact(s)", n.label, level_text(&n.level), n.contacts.len())).collect::<Vec<_>>().join("\n")
+                }
+            };
             let info = format!(
-                "peer {}\nNAT: {}\nconnected peers: {}\ndirect:\n{}\nonly via relay (not usable for chat, calls or files):\n{}\nseen from outside (for hole punching):\n{}\nrelay circuits:\n{}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {}{} · holding {} message(s)\nlast mailbox check: {}\nplugin network use:\n{}",
+                "peer {}\nNAT: {}\nconnected peers: {}\ndirect:\n{}\nonly via relay (not usable for chat, calls or files):\n{}\nseen from outside (for hole punching):\n{}\nrelay circuits:\n{}\nlistening:\n{}\nexternal:\n{}\nnostr relays:\n{}\nLAN only: {} · helper: {}{} · holding {} message(s)\nlast mailbox check: {}\nplugin network use:\n{}\nother networks (not RIM-encrypted):\n{}",
                 n.peer_id,
                 n.nat,
                 n.connected_peers,
@@ -1470,7 +1567,8 @@ fn handle_event(app: &AppRc, ev: Event) {
                 if n.bandwidth_kbps > 0 { format!(" (≤ {} kbit/s)", n.bandwidth_kbps) } else { String::new() },
                 n.held,
                 if n.mailbox_last_fetch == 0 { "never".to_string() } else { fmt_date(n.mailbox_last_fetch, off) },
-                plugin_net
+                plugin_net,
+                nets
             );
             m.set_net_info(info.into());
         }
@@ -1612,6 +1710,168 @@ fn on_unlocked(app: &AppRc, ev: Event) {
         start_api(app);
     }
     refresh_bot_rows(app);
+}
+
+// ================================================================ other networks (PRD §7.13)
+
+/// Another network a plugin brings in: its contacts show in their own folder,
+/// its chats in RIM's chat windows, always marked (PRD §9, transport honesty).
+struct Net {
+    label: String,
+    /// "C" (protected only by that network) or "D" (not encrypted).
+    level: String,
+    warning: String,
+    /// What the add field takes for this network, e.g. "an email address".
+    add_hint: String,
+    contacts: Vec<NetContact>,
+}
+
+/// Chat key of another network: "n:<plugin>:<contact>".
+fn net_key(key: &str) -> Option<(&str, &str)> {
+    key.strip_prefix("n:")?.split_once(':')
+}
+
+/// Icon frame of a network: never one of RIM's device frames (TH-4).
+fn net_device(label: &str) -> &'static str {
+    if label == "mail" { "mail" } else { "net" }
+}
+
+fn net_os(label: &str) -> String {
+    label.chars().take(4).collect::<String>().to_uppercase()
+}
+
+fn level_color(a: &App, level: &str) -> Color {
+    if level == "D" { rgb(palette(&a.settings.theme).red) } else { tint(Status::Away, a.dark()) }
+}
+
+fn level_text(level: &str) -> &'static str {
+    if level == "D" { "not encrypted (level D)" } else { "protected only by that network (level C)" }
+}
+
+fn is_rogue(a: &App, id: &str) -> bool {
+    bots::rogue(&a.contacts).is_some_and(|r| r.id == id)
+}
+
+fn net_line(key: &str, l: &NetLine) -> LineView {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    (key, &l.id).hash(&mut h);
+    LineView {
+        id: h.finish(),
+        ts: l.ts,
+        from_me: l.from_me,
+        who: l.who.clone(),
+        text: l.text.clone(),
+        delivery: match l.state.as_str() {
+            "sending" => Delivery::Queued,
+            "failed" => Delivery::Failed,
+            _ if l.from_me => Delivery::Delivered,
+            _ => Delivery::Received,
+        },
+        edited: false,
+        deleted: false,
+        reply_to: None,
+        urgent: false,
+        expires: None,
+        file: None,
+        image: None,
+    }
+}
+
+/// List, add field and open chats after a network changed.
+fn refresh_nets(app: &AppRc) {
+    {
+        let a = app.borrow();
+        if let Some(m) = a.main.upgrade() {
+            let hints: Vec<&str> = a.nets.values().map(|n| n.add_hint.as_str()).filter(|h| !h.is_empty()).collect();
+            let text = if hints.is_empty() { "paste a rim2:… invite or invite link".to_string() } else { format!("a rim2:… invite or link, or {}", hints.join(" or ")) };
+            m.set_add_placeholder(text.into());
+        }
+    }
+    rebuild_contacts(app);
+    refresh_all_chats(app);
+}
+
+/// The network that takes this address from the add field (an email address for mail).
+fn net_for_address(a: &App, s: &str) -> Option<String> {
+    let email = !s.contains(char::is_whitespace) && s.split_once('@').is_some_and(|(u, d)| !u.is_empty() && d.contains('.'));
+    a.nets.iter().find(|(_, n)| email && n.add_hint.contains("email")).map(|(p, _)| p.clone())
+}
+
+/// Send in a chat of another network. The first send on an unencrypted
+/// channel asks once (TH-3); a "no" puts the text back into the input.
+fn net_send(app: &AppRc, key: &str, text: &str) {
+    let Some((p, id)) = net_key(key) else { return };
+    let (label, level, warning, agreed) = {
+        let a = app.borrow();
+        let Some(n) = a.nets.get(p) else { return };
+        (n.label.clone(), n.level.clone(), n.warning.clone(), a.settings.plain_ok.iter().any(|x| x == p))
+    };
+    if level == "D" && !agreed {
+        let answer = rfd::MessageDialog::new()
+            .set_title(format!("Send by {label}?"))
+            .set_description(format!("{warning}\n\nSend it anyway? RogueIM won't ask again for {label}."))
+            .set_buttons(rfd::MessageButtons::YesNo)
+            .show();
+        if answer != rfd::MessageDialogResult::Yes {
+            set_draft(app, key, text);
+            return;
+        }
+        let mut a = app.borrow_mut();
+        a.settings.plain_ok.push(p.to_string());
+        save_settings(&a.dir, &a.settings);
+    }
+    app.borrow().host.send(p, &ToPlugin::Send { chat: id.to_string(), text: text.to_string() });
+}
+
+/// Put text back into a chat's input.
+fn set_draft(app: &AppRc, key: &str, text: &str) {
+    let a = app.borrow();
+    if a.docked_chat.as_deref() == Some(key) {
+        if let Some(m) = a.main.upgrade() {
+            m.set_dchat_draft(text.into());
+        }
+    }
+    if let Some(w) = a.chats.get(key) {
+        w.set_draft(text.into());
+    }
+}
+
+/// Right-click on a contact of another network: take it off the list.
+fn net_menu(app: &AppRc, key: &str) {
+    let Some((p, id)) = net_key(key) else { return };
+    let (name, label) = {
+        let a = app.borrow();
+        let Some(n) = a.nets.get(p) else { return };
+        (n.contacts.iter().find(|c| c.id == id).map(|c| c.name.clone()).unwrap_or_else(|| id.to_string()), n.label.clone())
+    };
+    let answer = rfd::MessageDialog::new()
+        .set_title(format!("Remove {name}?"))
+        .set_description(format!("Take {name} off the {label} list in RogueIM? Nothing is deleted at {label}."))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show();
+    if answer == rfd::MessageDialogResult::Yes {
+        app.borrow().host.send(p, &ToPlugin::Remove { chat: id.to_string() });
+    }
+}
+
+/// Sound, notification and pop-up for a new message in chat `key`, from RIM or another network.
+fn alert_incoming(app: &AppRc, key: &str, title: &str, urgent: bool) {
+    let (busy, open, notify, popups) = {
+        let a = app.borrow();
+        let open = a.docked_chat.as_deref() == Some(key) || a.chats.get(key).map(|w| w.window().is_visible()).unwrap_or(false);
+        (a.my_status.is_busy(), open, a.settings.notify, a.settings.popups || a.hidden)
+    };
+    app.borrow_mut().last_incoming = Some(key.to_string());
+    if !busy || urgent {
+        play(app, if urgent { desktop::Sound::Urgent } else { desktop::Sound::Message });
+        if notify && !open {
+            desktop::notify(title, "New message");
+        }
+        if popups && !open {
+            open_chat(app, key);
+        }
+    }
 }
 
 // ================================================================ make room (macOS)
@@ -2058,6 +2318,7 @@ fn main() {
         bot_rx,
         bot_line: 1 << 60,
         api: None,
+        nets: HashMap::new(),
         last_room: Instant::now(),
     }));
     for e in register_hotkeys(&app) {
@@ -2296,9 +2557,19 @@ fn wire_main(app: &AppRc, main: &MainWindow) {
     let ap = app.clone();
     main.on_add_contact(move |inv, text| {
         // Accept a whole invite link as well as the bare code.
-        let code = links::invite_from_url(&inv).unwrap_or_else(|| inv.to_string());
-        ap.borrow().send(Command::AddContact { invite: code, text: text.to_string() })
+        if let Some(code) = links::invite_from_url(&inv) {
+            ap.borrow().send(Command::AddContact { invite: code, text: text.to_string() });
+            return;
+        }
+        // Not a RIM invite: maybe an address for another network (an email address for mail).
+        let a = ap.borrow();
+        match net_for_address(&a, inv.trim()) {
+            Some(p) => a.host.send(&p, &ToPlugin::Add { address: inv.trim().to_string() }),
+            None => a.send(Command::AddContact { invite: inv.to_string(), text: text.to_string() }),
+        }
     });
+    let ap = app.clone();
+    main.on_net_menu(move |key| net_menu(&ap, &key));
     let ap = app.clone();
     main.on_accept(move |id| ap.borrow().send(Command::Accept { id: id.to_string() }));
     let ap = app.clone();
@@ -3160,7 +3431,7 @@ fn autohide_tick(app: &AppRc) {
 fn tray_tick(app: &AppRc) {
     let (unread, collapsed) = {
         let mut a = app.borrow_mut();
-        let unread: u32 = a.contacts.iter().map(|c| c.unread).sum::<u32>() + a.groups.iter().map(|g| g.unread).sum::<u32>();
+        let unread: u32 = a.contacts.iter().map(|c| c.unread).sum::<u32>() + a.groups.iter().map(|g| g.unread).sum::<u32>() + a.nets.values().flat_map(|n| &n.contacts).map(|c| c.unread).sum::<u32>();
         a.blink = unread > 0 && !a.blink;
         let color = tint_rgb(a.my_status, true);
         let tip = if unread > 0 { format!("RogueIM — {unread} unread") } else { format!("RogueIM — {}", a.my_status.label()) };
@@ -3243,6 +3514,13 @@ fn stop_plugin(app: &AppRc, id: &str) {
     }
     if id == "player" {
         a.send(Command::SetNowPlaying(String::new()));
+    }
+    let had_net = a.nets.remove(id).is_some();
+    let prefix = format!("n:{id}:");
+    a.histories.retain(|k, _| !k.starts_with(&prefix));
+    drop(a);
+    if had_net {
+        refresh_nets(app);
     }
 }
 
@@ -3333,6 +3611,44 @@ fn poll_plugins(app: &AppRc) {
                 a.plugin_net.retain(|(p, _, why)| !(p == &id && why == &purpose));
                 a.plugin_net.push((id.clone(), host, purpose));
             }
+            ToHost::Channel { label, level, warning, add_hint } => {
+                {
+                    let mut a = app.borrow_mut();
+                    let contacts = a.nets.remove(&id).map(|n| n.contacts).unwrap_or_default();
+                    // A plugin can't make itself look safer: anything but C counts as unencrypted,
+                    // and the warning is never empty (TH-2).
+                    let level = if level == "C" { "C" } else { "D" }.to_string();
+                    let warning = if warning.trim().is_empty() { format!("not RIM-encrypted: this goes through {label}") } else { warning };
+                    a.nets.insert(id.clone(), Net { label, level, warning, add_hint, contacts });
+                }
+                refresh_nets(app);
+            }
+            ToHost::Contacts { list } => {
+                let known = match app.borrow_mut().nets.get_mut(&id) {
+                    Some(n) => {
+                        n.contacts = list;
+                        true
+                    }
+                    None => false,
+                };
+                if known {
+                    refresh_nets(app);
+                }
+            }
+            ToHost::Lines { chat, lines } => {
+                if app.borrow().nets.contains_key(&id) {
+                    let key = format!("n:{id}:{chat}");
+                    let views: Vec<LineView> = lines.iter().map(|l| net_line(&key, l)).collect();
+                    app.borrow_mut().histories.insert(key.clone(), views);
+                    refresh_chat(app, &key);
+                }
+            }
+            ToHost::Incoming { chat, name } => {
+                let label = app.borrow().nets.get(&id).map(|n| n.label.clone());
+                if let Some(label) = label {
+                    alert_incoming(app, &format!("n:{id}:{chat}"), &format!("[{label}] {name}"), false);
+                }
+            }
         }
     }
     // A plugin that exited on its own loses its section.
@@ -3350,6 +3666,8 @@ fn wire_plugins(app: &AppRc, main: &MainWindow) {
     main.on_gadget_click(move |g, id| ap.borrow().host.send(&g, &ToPlugin::Click { id: id.to_string() }));
     let ap = app.clone();
     main.on_gadget_input(move |g, id, v| ap.borrow().host.send(&g, &ToPlugin::Input { id: id.to_string(), value: v.to_string() }));
+    let ap = app.clone();
+    main.on_gadget_edit(move |g, id, v| ap.borrow().host.send(&g, &ToPlugin::Edit { id: id.to_string(), value: v.to_string() }));
     let ap = app.clone();
     main.on_gadget_check(move |g, id, c| ap.borrow().host.send(&g, &ToPlugin::Check { id: id.to_string(), checked: c }));
     let ap = app.clone();
@@ -3635,7 +3953,7 @@ fn open_viewer(app: &AppRc, pipe: Arc<rim_core::engine::ScreenPipe>) {
 /// Ctrl+V in a chat: if the clipboard holds a picture, send it (with the
 /// typed text as caption). False lets the text field paste normally.
 fn paste_picture(app: &AppRc, key: &str, text: &str) -> bool {
-    if matches!(mode_of(key), "group" | "bot") {
+    if matches!(mode_of(key), "group" | "bot" | "net") {
         return false;
     }
     let Ok(mut cb) = arboard::Clipboard::new() else { return false };

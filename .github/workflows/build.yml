@@ -9,8 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  PKGS: -p rogueim -p rim-cli -p rim-plugin-pomodoro -p rim-plugin-todo -p rim-plugin-player
-  BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player
+  PKGS: -p rogueim -p rim-cli -p rim-plugin-pomodoro -p rim-plugin-todo -p rim-plugin-player -p rim-plugin-mail
+  BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail
 
 jobs:
   test:
@@ -28,7 +28,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Each engine test runs two or three full network nodes; the small CI runners
       # get flaky timeouts when all of them run at once.
-      - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo -- --test-threads=2
+      - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo -p rim-plugin-mail -- --test-threads=2
       - run: cargo build -p rogueim -p rim-cli
 
   build:
@@ -110,7 +110,7 @@ jobs:
           app="dist/dmg/RogueIM.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           # Everything lives inside the app: programs, plugins, the CLI, docs.
-          for b in rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player; do cp "target/release/$b" "$app/Contents/MacOS/"; done
+          for b in rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail; do cp "target/release/$b" "$app/Contents/MacOS/"; done
           cp README.md LICENSE "$app/Contents/Resources/"
           sed "s/@VERSION@/$version/" deploy/macos/Info.plist > "$app/Contents/Info.plist"
           mkdir -p icon.iconset

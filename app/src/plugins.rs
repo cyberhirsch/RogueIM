@@ -27,6 +27,7 @@ pub fn first_party() -> Vec<Manifest> {
         m("pomodoro", "Pomodoro", "Focus timer; sets Occupied while you focus.", &["presence.set", "settings.sync"]),
         m("todo", "Todo", "todo.txt or CalDAV tasks; \"add as task\" in chats.", &["chat.context_menu", "network:caldav"]),
         m("player", "Player", "Controls the active media player; can share what you listen to.", &["presence.now_playing"]),
+        m("mail", "Mail", "Your email in the buddy list: people you write to become contacts, their mails one chat. Not end-to-end encrypted.", &["chats", "network:imap", "network:smtp"]),
     ]
 }
 
@@ -154,6 +155,7 @@ pub fn allowed(m: &Manifest, msg: &ToHost) -> bool {
         ToHost::NowPlaying { .. } => has("presence.now_playing"),
         ToHost::State { .. } => has("settings.sync"),
         ToHost::Network { .. } => m.capabilities.iter().any(|c| c.starts_with("network:")),
+        ToHost::Channel { .. } | ToHost::Contacts { .. } | ToHost::Lines { .. } | ToHost::Incoming { .. } => has("chats"),
         ToHost::Hello { .. } | ToHost::View { .. } | ToHost::Notify { .. } | ToHost::Sound { .. } => true,
     }
 }

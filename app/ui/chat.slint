@@ -67,8 +67,16 @@ component LinkText inherits Text {
 // Chat content: slim header bar (also the drag handle), log, input.
 // Title-bar buttons are passed in as children and placed at the right of the header.
 export component ChatPane inherits Rectangle {
-    // "contact", "group" or "notes"
+    // "contact", "group", "notes", "bot" (local AI bot) or "net" (another network)
     in property <string> mode: "contact";
+    // Transport honesty (PRD TH-2): banner text and colour when the chat is
+    // not RIM end-to-end encrypted, a tag next to the input, and its hint.
+    in property <string> warn;
+    in property <color> warn-color;
+    in property <string> tag;
+    in property <string> compose-hint;
+    // The text being typed (set back when a send was cancelled).
+    in-out property <string> draft <=> input.text;
     in property <string> name;
     in property <string> fp;
     in property <string> status;
@@ -154,6 +162,17 @@ export component ChatPane inherits Rectangle {
             }
         }
         Rectangle { height: 1px; background: Theme.line; }
+
+        if root.warn != "": Rectangle {
+            background: Theme.bg;
+            border-width: 1px;
+            border-color: root.warn-color;
+            VerticalLayout {
+                padding: 3px;
+                padding-left: 6px;
+                Text { text: "! " + root.warn; color: root.warn-color; font-size: 10px; wrap: word-wrap; }
+            }
+        }
 
         // log
         Rectangle {
@@ -334,6 +353,11 @@ export component ChatPane inherits Rectangle {
                 height: 24px;
                 clicked => { root.urgent = !root.urgent; }
             }
+            if root.tag != "": HorizontalLayout {
+                padding-left: 4px;
+                padding-right: 2px;
+                Text { text: "[" + root.tag + "]"; color: root.warn-color; font-size: 10px; vertical-alignment: center; }
+            }
             // Wraps and grows with the text (up to 8 lines). Enter sends;
             // Ctrl+V with a picture in the clipboard sends the picture.
             Rectangle {
@@ -377,12 +401,12 @@ export component ChatPane inherits Rectangle {
                 if input.text == "": Text {
                     x: 5px;
                     y: 4px;
-                    text: root.authorized ? (root.urgent ? "urgent message…" : "message… (Ctrl+V pastes a picture)") : "waiting for authorization…";
+                    text: root.authorized ? (root.urgent ? "urgent message…" : root.compose-hint != "" ? root.compose-hint : "message… (Ctrl+V pastes a picture)") : "waiting for authorization…";
                     color: Theme.faint;
                     font-size: Theme.fs;
                 }
             }
-            if root.mode != "group" && root.mode != "bot": TButton {
+            if root.mode != "group" && root.mode != "bot" && root.mode != "net": TButton {
                 glyph: "+";
                 tip: "send a file (direct connection only; you can also drop files here)";
                 height: 24px;
@@ -425,6 +449,11 @@ export component ChatWindow inherits Window {
     in property <bool> is-max;
     in property <bool> can-task;
     in-out property <bool> pinned;
+    in property <string> warn;
+    in property <color> warn-color;
+    in property <string> tag;
+    in property <string> compose-hint;
+    in-out property <string> draft;
     // "", "calling", "ringing", "active": the call with this contact
     in property <string> call-state;
     callback call-toggle();
@@ -463,6 +492,11 @@ export component ChatWindow inherits Window {
         typing: root.typing;
         lines: root.lines;
         can-task: root.can-task;
+        warn: root.warn;
+        warn-color: root.warn-color;
+        tag: root.tag;
+        compose-hint: root.compose-hint;
+        draft <=> root.draft;
         send(t, u, r) => { root.send(t, u, r); }
         typed => { root.typed(); }
         line-action(a, i) => { root.line-action(a, i); }

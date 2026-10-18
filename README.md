@@ -79,7 +79,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Without a direct path | Messages over a live Nostr subscription (about a second), presence over short-lived Nostr signals |
 | Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), drag & drop files onto chats, tray with your own OS icon, notifications, per-event sounds, rebindable global hotkeys, autostart (optionally hidden), Away on screen lock, idle lock, optional passphrase in the OS keychain |
 | Themes | graphite (default), grey, green, amber; bundled Hack monospace font |
-| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status |
+| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail (see below) |
 | Headless | `rim-cli` as node (relay/DHT/mailbox helper), bot with a local JSON API, one-shot sender |
 
 ## Known limitations of the alpha
@@ -91,10 +91,25 @@ Invites are single-use by default, expire, and carry a small proof of work.
   (see below) entered under settings → net → bootstrap.
 - The CalDAV mode of the todo plugin has not been tested against a real server yet.
 - "Remember on this computer" puts the passphrase in the OS keychain; anyone logged in as you can then open RIM. A remote lock removes it.
-- Only the three first-party plugins are loaded. Third-party plugins and plugin signing come later.
+- Only the first-party plugins are loaded. Third-party plugins and plugin signing come later.
+- The mail plugin has not been tested against real mail providers yet.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
 - No installers yet: archives only.
+
+## Mail
+
+Settings → plugins → **mail**: your email in the buddy list. Enter your address and password; the servers are filled
+in for common providers (Gmail, iCloud and Yahoo need an app password; Outlook.com no longer lets other programs log in
+with a password). The password is kept in the OS keychain. RogueIM stores no mail on disk.
+
+- The people you wrote to (the last 500 sent mails) appear in a **mail** folder with an envelope icon. Paste an email
+  address under **+ add** to add someone; right-click to take someone off the list (nothing is deleted at the provider).
+- One person is one chat: their latest mails and yours, quotes and signatures cut, attachments named but not loaded.
+  Opening the chat marks their mail read. What you write goes out as a reply in the same thread, with a copy in "Sent".
+- New mail is checked every minute. Mail from someone on the list rings and pops up like a RogueIM message.
+- Mail is not end-to-end encrypted: your provider and the recipient's can read it. Every mail chat says so, the input is
+  tagged `[mail]`, and the first mail you send asks once.
 
 ## Run a node
 
@@ -148,7 +163,7 @@ crates/rim-core         engine: identity, Olm/Megolm, libp2p swarm, Nostr mailbo
 crates/rim-cli          headless peer: node, bot, scripting
 crates/rim-plugin-sdk   plugin protocol (JSON lines over a local socket)
 app/                    Slint desktop app (ui/*.slint, src/dock.rs = docking)
-plugins/                pomodoro, todo, player
+plugins/                pomodoro, todo, player, mail
 deploy/                 Dockerfile, systemd unit, .deb scripts
 docs/                   PRD, tech stack, protocol spec
 ```
@@ -156,7 +171,7 @@ docs/                   PRD, tech stack, protocol spec
 ## Tests
 
 ```
-cargo test -p rim-core -p rim-plugin-pomodoro -p rim-plugin-player
+cargo test -p rim-core -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-mail
 cargo test -p rim-core -- --ignored     # live tests against public Nostr relays
 ```
 

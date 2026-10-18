@@ -1,0 +1,22 @@
+[package]
+name = "rim-plugin-mail"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+keyring = { version = "3", features = ["windows-native", "apple-native", "sync-secret-service", "crypto-rust"] }
+async-imap = { version = "0.12.0", default-features = false, features = ["runtime-tokio"] }
+futures = "0.3.34"
+lettre = { version = "0.11.23", default-features = false, features = ["builder", "smtp-transport", "tokio1-rustls-tls"] }
+mail-parser = { version = "0.11.9", features = ["full_encoding"] }
+rim-plugin-sdk = { version = "0.1.0", path = "../../crates/rim-plugin-sdk" }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.154"
+time = { version = "0.3.55", features = ["local-offset"] }
+tokio = { version = "1.53.3", features = ["rt", "net", "time", "io-util", "sync"] }
+tokio-rustls = { version = "0.26.6", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "1.0.9"
+
+[dev-dependencies]
+interprocess = "2"
