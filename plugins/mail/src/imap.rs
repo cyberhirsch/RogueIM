@@ -8,7 +8,7 @@ use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use async_imap::imap_proto::Address;
+use async_imap::imap_proto::{Address, BodyContentCommon, BodyContentSinglePart, BodyStructure, ContentEncoding, SectionPath};
 use async_imap::types::{Fetch, Flag, NameAttribute};
 use async_imap::{Client, Session};
 use futures::TryStreamExt;
@@ -27,11 +27,14 @@ const INBOX_SCAN: u32 = 1000;
 /// Mails per side (received / sent) loaded into a chat.
 const CHAT_FETCH: usize = 30;
 const CHAT_LINES: usize = 40;
-/// Only the start of each mail is fetched (text comes first; attachments are named, not loaded).
-const BODY_BYTES: u32 = 131_072;
+/// Mails up to this size are fetched whole; of bigger ones only the header
+/// and the text part (attachments are named from the structure, not loaded).
+const WHOLE_BYTES: u32 = 262_144;
 const POLL: Duration = Duration::from_secs(60);
 const RESCAN: Duration = Duration::from_secs(15 * 60);
 const NET_TIMEOUT: Duration = Duration::from_secs(60);
+/// A connection unused for longer is checked (NOOP) before it is used again.
+const IDLE_CHECK: Duration = Duration::from_secs(20);
 
 #[derive(Clone, Debug, Default)]
 pub struct Account {
@@ -170,6 +173,180 @@ fn uid_set(uids: &[u32]) -> String {
     uids.iter().map(|u| u.to_string()).collect::<Vec<_>>().join(",")
 }
 
+/// A fetched mail, ready for the parser, with the attachments a big mail's structure names.
+struct Got {
+    uid: u32,
+    seen: bool,
+    raw: Vec<u8>,
+    files: Vec<String>,
+}
+
+/// Mails of the selected folder: small ones whole, of big ones the header and
+/// the text part only. (Partial fetches, "BODY[]<0.n>", come back in a form
+/// some servers get wrong, so they are not used.)
+async fn fetch_mails(s: &mut Sess, uids: &[u32]) -> Result<Vec<Got>, String> {
+    let mut small: Vec<(u32, bool)> = vec![];
+    let mut big: Vec<(u32, bool, Parts)> = vec![];
+    for f in fetch_uid(s, &uid_set(uids), "(UID FLAGS RFC822.SIZE BODYSTRUCTURE)").await? {
+        let Some(uid) = f.uid else { continue };
+        match f.bodystructure() {
+            Some(bs) if f.size.unwrap_or(0) > WHOLE_BYTES => {
+                let mut p = Parts::default();
+                p.walk(bs, &mut vec![]);
+                big.push((uid, seen(&f), p));
+            }
+            _ => small.push((uid, seen(&f))),
+        }
+    }
+    let mut out = vec![];
+    if !small.is_empty() {
+        let ids: Vec<u32> = small.iter().map(|m| m.0).collect();
+        for f in fetch_uid(s, &uid_set(&ids), "(UID BODY.PEEK[])").await? {
+            let (Some(uid), Some(raw)) = (f.uid, f.body()) else { continue };
+            let seen = small.iter().find(|m| m.0 == uid).is_none_or(|m| m.1);
+            out.push(Got { uid, seen, raw: raw.to_vec(), files: vec![] });
+        }
+    }
+    for (uid, seen, p) in big {
+        let (query, path) = match &p.text {
+            Some((path, _, _)) => {
+                let sec = path.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(".");
+                (format!("(UID BODY.PEEK[HEADER] BODY.PEEK[{sec}])"), Some(SectionPath::Part(path.clone(), None)))
+            }
+            None => ("(UID BODY.PEEK[HEADER])".to_string(), None),
+        };
+        for f in fetch_uid(s, &uid.to_string(), &query).await? {
+            let Some(header) = f.header() else { continue };
+            let (content, body) = match (&p.text, &path) {
+                (Some((_, _, content)), Some(path)) => (content.as_str(), f.section(path).unwrap_or_default()),
+                _ => ("Content-Type: text/plain; charset=utf-8\r\n", &[][..]),
+            };
+            out.push(Got { uid, seen, raw: one_part(header, content, body), files: p.files.clone() });
+        }
+    }
+    Ok(out)
+}
+
+/// What a big mail is made of: the part to show and the attachments.
+#[derive(Default)]
+struct Parts {
+    /// Part number (e.g. [1, 1]), whether it is text/plain, and its content headers.
+    text: Option<(Vec<u32>, bool, String)>,
+    files: Vec<String>,
+}
+
+impl Parts {
+    fn walk(&mut self, bs: &BodyStructure<'_>, path: &mut Vec<u32>) {
+        match bs {
+            BodyStructure::Multipart { bodies, .. } => {
+                for (i, b) in bodies.iter().enumerate() {
+                    path.push(i as u32 + 1);
+                    self.walk(b, path);
+                    path.pop();
+                }
+            }
+            BodyStructure::Text { common, other, .. } if !is_attachment(common) && ["plain", "html"].iter().any(|t| common.ty.subtype.eq_ignore_ascii_case(t)) => {
+                // The first text/plain, else the first text/html; the other one of a pair is the same text.
+                let plain = common.ty.subtype.eq_ignore_ascii_case("plain");
+                if self.text.as_ref().is_none_or(|(_, was_plain, _)| plain && !was_plain) {
+                    // A mail that is not multipart has just one part, number 1.
+                    let p = if path.is_empty() { vec![1] } else { path.clone() };
+                    self.text = Some((p, plain, content_headers(common, other)));
+                }
+            }
+            BodyStructure::Basic { common, other, .. } | BodyStructure::Text { common, other, .. } | BodyStructure::Message { common, other, .. } => {
+                // Pictures inside the mail (a logo in the signature) are no attachments.
+                let embedded = other.id.is_some() && !is_attachment(common) && common.ty.ty.eq_ignore_ascii_case("image");
+                if !embedded {
+                    self.files.push(file_name(common));
+                }
+            }
+        }
+    }
+}
+
+fn is_attachment(c: &BodyContentCommon<'_>) -> bool {
+    c.disposition.as_ref().is_some_and(|d| d.ty.eq_ignore_ascii_case("attachment"))
+}
+
+/// The name of an attachment: its file name, else its type.
+fn file_name(c: &BodyContentCommon<'_>) -> String {
+    let find = |params: Option<&Vec<(std::borrow::Cow<'_, str>, std::borrow::Cow<'_, str>)>>, key: &str| {
+        let params = params?;
+        if let Some((_, v)) = params.iter().find(|(k, _)| k.eq_ignore_ascii_case(key)) {
+            return Some(text::decode_words(v.as_bytes()));
+        }
+        // RFC 2231: name*=utf-8''R%C3%A9sum%C3%A9.pdf
+        let (_, v) = params.iter().find(|(k, _)| k.eq_ignore_ascii_case(&format!("{key}*")))?;
+        let v = v.splitn(3, '\'').nth(2).unwrap_or(v);
+        Some(percent_decode(v))
+    };
+    find(c.disposition.as_ref().and_then(|d| d.params.as_ref()), "filename")
+        .or_else(|| find(c.ty.params.as_ref(), "name"))
+        .filter(|n| !n.trim().is_empty())
+        .unwrap_or_else(|| if c.ty.ty.eq_ignore_ascii_case("message") { "forwarded mail".into() } else { format!("{}/{}", c.ty.ty, c.ty.subtype).to_lowercase() })
+}
+
+fn percent_decode(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        match (b[i], b.get(i + 1..i + 3).and_then(|h| u8::from_str_radix(std::str::from_utf8(h).ok()?, 16).ok())) {
+            (b'%', Some(byte)) => {
+                out.push(byte);
+                i += 3;
+            }
+            (c, _) => {
+                out.push(c);
+                i += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// Content-Type and Content-Transfer-Encoding of a part, as header lines.
+fn content_headers(c: &BodyContentCommon<'_>, o: &BodyContentSinglePart<'_>) -> String {
+    let params: String = c.ty.params.iter().flatten().map(|(k, v)| format!("; {k}=\"{}\"", v.replace('\\', "\\\\").replace('"', "\\\""))).collect();
+    let enc = match &o.transfer_encoding {
+        ContentEncoding::SevenBit => "7bit",
+        ContentEncoding::EightBit => "8bit",
+        ContentEncoding::Binary => "binary",
+        ContentEncoding::Base64 => "base64",
+        ContentEncoding::QuotedPrintable => "quoted-printable",
+        ContentEncoding::Other(e) => e,
+    };
+    format!("Content-Type: {}/{}{params}\r\nContent-Transfer-Encoding: {enc}\r\n", c.ty.ty.to_lowercase(), c.ty.subtype.to_lowercase())
+}
+
+/// A one-part mail from a big mail's header and its text part.
+fn one_part(header: &[u8], content: &str, body: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(header.len() + content.len() + body.len() + 24);
+    let mut skip = false;
+    for l in header.split_inclusive(|&b| b == b'\n') {
+        if l.iter().all(|b| b.is_ascii_whitespace()) {
+            break;
+        }
+        // A folded line belongs to the field before it.
+        if !l.starts_with(b" ") && !l.starts_with(b"\t") {
+            let name = String::from_utf8_lossy(&l[..l.len().min(16)]).to_ascii_lowercase();
+            skip = name.starts_with("content-") || name.starts_with("mime-version");
+        }
+        if !skip {
+            out.extend_from_slice(l);
+        }
+    }
+    if !out.is_empty() && !out.ends_with(b"\n") {
+        out.extend_from_slice(b"\r\n");
+    }
+    out.extend_from_slice(b"MIME-Version: 1.0\r\n");
+    out.extend_from_slice(content.as_bytes());
+    out.extend_from_slice(b"\r\n");
+    out.extend_from_slice(body);
+    out
+}
+
 fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
@@ -198,6 +375,8 @@ struct Worker {
     pending: u32,
     /// Message-ID of each line sent from here, to spot its copy in "Sent".
     sent_ids: HashMap<String, String>,
+    /// Last use of the connection.
+    used: Option<Instant>,
 }
 
 pub fn spawn(rx: Receiver<Job>, tx: Sender<Up>) {
@@ -292,12 +471,19 @@ impl Worker {
     }
 
     async fn session(&mut self) -> Result<&mut Sess, String> {
+        // Servers and routers close idle connections, often without a word: check one first.
+        if let Some(s) = self.session.as_mut() {
+            if self.used.is_none_or(|t| t.elapsed() > IDLE_CHECK) && !matches!(tokio::time::timeout(Duration::from_secs(10), s.noop()).await, Ok(Ok(()))) {
+                self.session = None;
+            }
+        }
         if self.session.is_none() {
             let acc = self.acc.as_ref().ok_or("not signed in")?;
             let mut s = connect(acc).await?;
             self.sent = find_sent(&mut s).await?;
             self.session = Some(s);
         }
+        self.used = Some(Instant::now());
         Ok(self.session.as_mut().expect("session"))
     }
 
@@ -425,7 +611,6 @@ impl Worker {
         let sent = self.sent.clone();
         let s = self.session().await?;
         let parser = MessageParser::default();
-        let query = format!("(UID FLAGS BODY.PEEK[]<0.{BODY_BYTES}>)");
         // (line, subject, Message-ID, References)
         let mut got: Vec<(NetLine, String, String, String)> = vec![];
 
@@ -435,17 +620,17 @@ impl Worker {
         let uids: Vec<u32> = uids.into_iter().rev().take(CHAT_FETCH).collect();
         let mut unseen = vec![];
         if !uids.is_empty() {
-            for f in fetch_uid(s, &uid_set(&uids), &query).await? {
-                let Some(msg) = f.body().and_then(|b| parser.parse(b)) else { continue };
+            for g in fetch_mails(s, &uids).await? {
+                let Some(msg) = parser.parse(&g.raw) else { continue };
                 let from = msg.from().and_then(|a| a.first()).and_then(|a| a.address()).map(str::to_lowercase).unwrap_or_default();
                 if from != addr {
                     continue;
                 }
-                if !seen(&f) {
-                    unseen.push(f.uid.unwrap_or(0));
+                if !g.seen {
+                    unseen.push(g.uid);
                 }
                 let who = msg.from().and_then(|a| a.first()).and_then(|a| a.name()).map(str::to_string).unwrap_or_else(|| addr.to_string());
-                got.push(line(&msg, format!("i:{}", f.uid.unwrap_or(0)), false, who));
+                got.push(line(&msg, format!("i:{}", g.uid), false, who, &g.files));
             }
         }
         if !unseen.is_empty() {
@@ -457,13 +642,13 @@ impl Worker {
             uids.sort_unstable();
             let uids: Vec<u32> = uids.into_iter().rev().take(CHAT_FETCH).collect();
             if !uids.is_empty() {
-                for f in fetch_uid(s, &uid_set(&uids), &query).await? {
-                    let Some(msg) = f.body().and_then(|b| parser.parse(b)) else { continue };
+                for g in fetch_mails(s, &uids).await? {
+                    let Some(msg) = parser.parse(&g.raw) else { continue };
                     let to_them = msg.to().into_iter().chain(msg.cc()).flat_map(|a| a.iter()).any(|a| a.address().is_some_and(|x| x.eq_ignore_ascii_case(addr)));
                     if !to_them {
                         continue;
                     }
-                    got.push(line(&msg, format!("s:{}", f.uid.unwrap_or(0)), true, own_name.clone()));
+                    got.push(line(&msg, format!("s:{}", g.uid), true, own_name.clone(), &g.files));
                 }
             }
         }
@@ -584,12 +769,12 @@ impl Worker {
 }
 
 /// One mail as a chat line, with what a reply needs (subject, Message-ID, References).
-fn line(msg: &mail_parser::Message<'_>, id: String, mine: bool, who: String) -> (NetLine, String, String, String) {
+fn line(msg: &mail_parser::Message<'_>, id: String, mine: bool, who: String, files: &[String]) -> (NetLine, String, String, String) {
     let ts = msg.date().map(|d| d.to_timestamp()).unwrap_or(0);
     let subject = msg.subject().unwrap_or("").to_string();
     let mid = msg.message_id().map(|m| format!("<{m}>")).unwrap_or_default();
     let refs = msg.references().as_text_list().map(|v| v.iter().map(|r| format!("<{r}>")).collect::<Vec<_>>().join(" ")).or_else(|| msg.references().as_text().map(|r| format!("<{r}>"))).unwrap_or_default();
-    (NetLine { id, ts, from_me: mine, who, text: text::chat_text(msg), state: String::new() }, subject, mid, refs)
+    (NetLine { id, ts, from_me: mine, who, text: text::chat_text(msg, files), state: String::new() }, subject, mid, refs)
 }
 
 #[cfg(test)]
@@ -602,6 +787,29 @@ mod tests {
         assert!(!valid_address("anna\"@example.org"));
         assert!(!valid_address("no at sign"));
         assert!(!valid_address("a@b"));
+    }
+
+    #[test]
+    fn big_mail_shows_its_text_part_and_names_attachments() {
+        use async_imap::imap_proto::{AttributeValue, Response};
+        let raw = b"* 1 FETCH (UID 7 RFC822.SIZE 400000 BODYSTRUCTURE (((\"text\" \"plain\" (\"charset\" \"utf-8\") NIL NIL \"quoted-printable\" 120 5 NIL NIL NIL NIL)(\"text\" \"html\" (\"charset\" \"utf-8\") NIL NIL \"quoted-printable\" 400 10 NIL NIL NIL NIL) \"alternative\" (\"boundary\" \"b2\") NIL NIL NIL)(\"image\" \"png\" (\"name\" \"image001.png\") \"<image001.png@01D>\" NIL \"base64\" 5000 NIL (\"inline\" (\"filename\" \"image001.png\")) NIL NIL)(\"application\" \"pdf\" (\"name\" \"=?UTF-8?Q?Rechnung_M=C3=A4rz.pdf?=\") NIL NIL \"base64\" 390000 NIL (\"attachment\" (\"filename*\" \"utf-8''Rechnung%20M%C3%A4rz.pdf\")) NIL NIL)(\"application\" \"zip\" (\"name\" \"=?UTF-8?Q?Fotos_M=C3=A4rz.zip?=\") NIL NIL \"base64\" 9000 NIL NIL NIL NIL) \"mixed\" (\"boundary\" \"b1\") NIL NIL NIL))\r\n";
+        let Ok((_, Response::Fetch(_, attrs))) = Response::parse(raw) else { panic!("parse") };
+        let bs = attrs.iter().find_map(|a| if let AttributeValue::BodyStructure(b) = a { Some(b) } else { None }).unwrap();
+        let mut p = Parts::default();
+        p.walk(bs, &mut vec![]);
+        let (path, plain, content) = p.text.unwrap();
+        assert_eq!((path, plain), (vec![1, 1], true));
+        assert_eq!(content, "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: quoted-printable\r\n");
+        assert_eq!(p.files, vec!["Rechnung März.pdf".to_string(), "Fotos März.zip".to_string()]);
+    }
+
+    #[test]
+    fn one_part_keeps_the_header_and_swaps_the_content_fields() {
+        let header = b"From: Anna <a@example.org>\r\nSubject: Photos\r\nContent-Type: multipart/mixed;\r\n boundary=\"b1\"\r\nMIME-Version: 1.0\r\nMessage-ID: <x@y>\r\n\r\n";
+        let raw = one_part(header, "Content-Type: text/plain; charset=\"utf-8\"\r\nContent-Transfer-Encoding: quoted-printable\r\n", b"Gr=C3=BC=C3=9Fe\r\n");
+        let msg = MessageParser::default().parse(&raw).unwrap();
+        assert_eq!((msg.subject(), msg.message_id()), (Some("Photos"), Some("x@y")));
+        assert_eq!(msg.body_text(0).unwrap().trim(), "Grüße");
     }
 
     #[test]

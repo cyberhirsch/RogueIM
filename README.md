@@ -92,7 +92,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 - The CalDAV mode of the todo plugin has not been tested against a real server yet.
 - "Remember on this computer" puts the passphrase in the OS keychain; anyone logged in as you can then open RIM. A remote lock removes it.
 - Only the first-party plugins are loaded. Third-party plugins and plugin signing come later.
-- The mail plugin has not been tested against real mail providers yet.
+- The mail plugin has been tested against a local test server (GreenMail) only, not yet against real mail providers.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
 - No installers yet: archives only.

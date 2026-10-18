@@ -9,7 +9,9 @@
 //!   cargo test -p rim-plugin-mail -- --ignored --test-threads=1
 //!
 //! IMAP on 127.0.0.1:3143 and SMTP on 127.0.0.1:3025; other ports with
-//! RIM_MAIL_TEST_IMAP / RIM_MAIL_TEST_SMTP. Use a fresh server for each run.
+//! RIM_MAIL_TEST_IMAP / RIM_MAIL_TEST_SMTP. Each run needs empty mailboxes:
+//! restart GreenMail or `curl -X POST http://127.0.0.1:8080/api/service/reset`.
+//! The tests store a test password in the OS keychain and remove it again.
 
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
@@ -90,6 +92,13 @@ impl Host {
     fn stop(mut self) {
         self.tell(ToPlugin::Stop);
         let _ = self.child.wait();
+    }
+}
+
+impl Drop for Host {
+    /// A failed test doesn't leave the plugin running.
+    fn drop(&mut self) {
+        let _ = self.child.kill();
     }
 }
 
@@ -251,10 +260,31 @@ fn mail_end_to_end() {
     let _ = std::fs::remove_dir_all(dir);
 }
 
+/// A mail too big to fetch whole: text and attachment name come from its structure.
+fn big_mail() -> Vec<u8> {
+    use lettre::message::{header::ContentType, Attachment, MultiPart, SinglePart};
+    let zip: Vec<u8> = (0..300_000u32).map(|i| (i * 7 % 251) as u8).collect();
+    lettre::Message::builder()
+        .from("Anna <anna@example.org>".parse().unwrap())
+        .to("new@example.org".parse().unwrap())
+        .subject("Photos")
+        .message_id(Some("<photos-1@example.org>".into()))
+        .date(SystemTime::now() - Duration::from_secs(600))
+        .multipart(MultiPart::mixed().singlepart(SinglePart::plain("Here are the photos.".to_string())).singlepart(Attachment::new("photos.zip".into()).body(zip, ContentType::parse("application/zip").unwrap())))
+        .unwrap()
+        .formatted()
+}
+
 /// A new mailbox has no "Sent": the first mail creates it and keeps a copy there.
 #[test]
 #[ignore]
 fn mail_creates_sent() {
+    let rt = rt();
+    rt.block_on(async {
+        let mut s = imap("new@example.org").await;
+        s.append("INBOX", None, None, big_mail()).await.unwrap();
+        s.logout().await.unwrap();
+    });
     let dir = data_dir("new");
     let mut h = Host::start("new", &dir);
     h.sign_in("new@example.org");
@@ -262,15 +292,15 @@ fn mail_creates_sent() {
     h.tell(ToPlugin::Add { address: "anna@example.org".into() });
     h.contacts("Anna added", |l| l.iter().any(|c| c.id == "anna@example.org"));
     h.tell(ToPlugin::Open { chat: "anna@example.org".into() });
-    h.lines("anna@example.org", "an empty chat", |l| l.is_empty());
-    h.tell(ToPlugin::Send { chat: "anna@example.org".into(), text: "Hello Anna\nhow are you?".into() });
+    let lines = h.lines("anna@example.org", "the big mail", |l| l.len() == 1);
+    assert_eq!(lines[0].text, "subject: Photos\nHere are the photos.\n[attachment: photos.zip]");
+    h.tell(ToPlugin::Send { chat: "anna@example.org".into(), text: "Thanks!\nAll of them?".into() });
     let lines = h.lines("anna@example.org", "the copy from Sent", |l| l.iter().any(|x| x.id.starts_with("s:")));
-    assert_eq!(lines.len(), 1);
-    assert_eq!(lines[0].text, "subject: Hello Anna\nHello Anna\nhow are you?");
-    let rt = rt();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[1].text, "Thanks!\nAll of them?");
     let sent = rt.block_on(folder("new@example.org", "Sent"));
     assert_eq!(sent.len(), 1);
-    assert_eq!(sent[0].0, "Hello Anna");
+    assert_eq!((sent[0].0.as_str(), sent[0].2.as_str()), ("Re: Photos", "photos-1@example.org"));
     h.tell(ToPlugin::Click { id: "signout".into() });
     h.contacts("an empty list", |l| l.is_empty());
     h.stop();

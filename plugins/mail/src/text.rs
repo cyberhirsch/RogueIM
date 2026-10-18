@@ -6,8 +6,9 @@ use mail_parser::{Message, MessageParser, MimeHeaders};
 /// Longest text shown for one mail.
 const MAX_CHARS: usize = 4000;
 
-/// The new part of a mail, as a chat line.
-pub fn chat_text(msg: &Message<'_>) -> String {
+/// The new part of a mail, as a chat line; `more` names attachments known
+/// from the mail's structure (big mails are not fetched whole).
+pub fn chat_text(msg: &Message<'_>, more: &[String]) -> String {
     let body = msg.body_text(0).map(|b| b.to_string()).unwrap_or_default();
     let mut text = strip_quotes(&body);
     if text.is_empty() {
@@ -16,7 +17,14 @@ pub fn chat_text(msg: &Message<'_>) -> String {
     if text.chars().count() > MAX_CHARS {
         text = text.chars().take(MAX_CHARS).collect::<String>() + " …";
     }
-    let files: Vec<String> = msg.attachments().filter_map(|p| p.attachment_name()).map(|n| format!("[attachment: {n}]")).collect();
+    let files: Vec<String> = msg
+        .attachments()
+        // Pictures inside the mail (a logo in the signature) are no attachments.
+        .filter(|p| !(p.content_id().is_some() && !p.content_disposition().is_some_and(|d| d.is_attachment()) && p.content_type().is_some_and(|t| t.ctype().eq_ignore_ascii_case("image"))))
+        .map(|p| p.attachment_name().map(str::to_string).unwrap_or_else(|| p.content_type().map(|t| format!("{}/{}", t.ctype(), t.subtype().unwrap_or("")).to_lowercase()).unwrap_or_else(|| "file".into())))
+        .chain(more.iter().cloned())
+        .map(|n| format!("[attachment: {n}]"))
+        .collect();
     if !files.is_empty() {
         if !text.is_empty() {
             text.push('\n');
@@ -155,13 +163,21 @@ mod tests {
     fn chat_text_names_attachments() {
         let raw = b"From: Anna <anna@example.org>\r\nTo: me@example.org\r\nSubject: Photos\r\nMIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary=\"b\"\r\n\r\n--b\r\nContent-Type: text/plain; charset=utf-8\r\n\r\nHere they are.\r\n--b\r\nContent-Type: image/jpeg\r\nContent-Disposition: attachment; filename=\"beach.jpg\"\r\nContent-Transfer-Encoding: base64\r\n\r\n/9j/4AAQ\r\n--b--\r\n";
         let msg = MessageParser::default().parse(raw).unwrap();
-        assert_eq!(chat_text(&msg), "Here they are.\n[attachment: beach.jpg]");
+        assert_eq!(chat_text(&msg, &[]), "Here they are.\n[attachment: beach.jpg]");
+        assert_eq!(chat_text(&msg, &["big.pdf".into()]), "Here they are.\n[attachment: beach.jpg]\n[attachment: big.pdf]");
+    }
+
+    #[test]
+    fn a_logo_in_the_signature_is_no_attachment() {
+        let raw = b"From: a@b.c\r\nSubject: x\r\nMIME-Version: 1.0\r\nContent-Type: multipart/related; boundary=\"r\"\r\n\r\n--r\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Thanks</p><img src=\"cid:logo1\">\r\n--r\r\nContent-Type: image/png; name=\"image001.png\"\r\nContent-Disposition: inline; filename=\"image001.png\"\r\nContent-ID: <logo1>\r\nContent-Transfer-Encoding: base64\r\n\r\niVBORw0KGgo=\r\n--r--\r\n";
+        let msg = MessageParser::default().parse(raw).unwrap();
+        assert_eq!(chat_text(&msg, &[]).trim(), "Thanks");
     }
 
     #[test]
     fn html_only_mail_becomes_text() {
         let raw = b"From: a@b.c\r\nSubject: x\r\nContent-Type: text/html; charset=utf-8\r\n\r\n<p>Hello <b>there</b></p>";
         let msg = MessageParser::default().parse(raw).unwrap();
-        assert_eq!(chat_text(&msg).trim(), "Hello there");
+        assert_eq!(chat_text(&msg, &[]).trim(), "Hello there");
     }
 }
