@@ -29,18 +29,21 @@ on Windows 10; Linux and macOS builds compile in CI but have not been run by han
 ## 1. One-liner
 
 ICQ's buddy-list feel, rebuilt with no servers and end-to-end encryption by default. Desktop first.
+Optional plugins bring email and other messengers into the same list, always marked as what they are.
 
 ## 2. Problem
 
 - Modern messengers are phone-first, centrally operated, and tie identity to a phone number.
 - Centralised services see the social graph, can be shut down, blocked, or compelled.
 - Desktop users lost the lightweight, always-there buddy list: glance at who is online, double-click, talk.
+- People juggle several messengers and email, each with its own app, window and notifications.
 
 ## 3. Goals
 
 1. **No required infrastructure.** Every feature works with zero RIM-operated servers.
 2. **E2EE by default**, forward secrecy, no plaintext at rest.
-3. **No phone number, no email.** Identity is a keypair.
+3. **No phone number, no email.** Identity is a keypair. Plugins for other networks (§7.13) may use the user's
+   existing accounts there; RIM itself never needs one.
 4. **The ICQ experience**: docked buddy list, statuses, away messages, separate chat windows, sounds, authorization requests.
 5. **Lightweight**: small binary, low RAM, instant startup.
 6. **Open**: GPL-3.0-or-later code and a published protocol specification.
@@ -48,12 +51,14 @@ ICQ's buddy-list feel, rebuilt with no servers and end-to-end encryption by defa
 ## 4. Non-goals
 
 - Full-featured mobile apps. RIM is desktop first. A lightweight **mobile companion** (chat + presence) is planned later so contacts can be reachable from their phone.
-- Voice/video calls.
+- Video calls and group calls. (1:1 voice calls with view-only screen sharing exist.)
 - Anonymity against a global network observer (Tor transport is a later option).
 - Public chat rooms / large communities (>100 members).
 - Public user directory — discovery is by invite only.
-- Federation or bridges to other networks.
-- Rich text, emoji, stickers, GIFs, link previews, remote content, AI features. RIM should feel nerdy and retro — for people who miss ICQ.
+- Federation of RIM's own protocol with other networks. RIM accounts stay keypairs; RIM contacts stay end-to-end encrypted.
+- Bridges in the core. Other networks only come in through optional plugins (§7.13), clearly marked (§9, TH-1..6).
+- Rich text, emoji, stickers, GIFs, link previews, remote content. AI only as bot contacts (§7.9), never built into chats.
+  RIM should feel nerdy and retro — for people who miss ICQ.
 - Any telemetry.
 
 **Design rule:** nothing exists just for show. Every element must do real work.
@@ -168,6 +173,8 @@ Priority: **P0** = MVP, **P1** = v1.0, **P2** = later.
 | FT-5 | Both sides must be online. If no direct path can be made, the transfer is queued and retried automatically when a path appears, with a clear "no direct connection" state and a hint (same LAN, IPv6, enable UPnP) | P0 |
 | FT-6 | No size limit imposed by RIM | P0 |
 
+For people without RIM see HB-3.
+
 ### 7.7 Notifications & sounds
 
 | ID | Requirement | Pri |
@@ -201,6 +208,9 @@ Priority: **P0** = MVP, **P1** = v1.0, **P2** = later.
 | BT-1 | **Bot mode**: `rim-cli` runs as its own RIM account (e.g. on a Pi) and sends messages to authorized contacts — alerts for backups, servers, disks | P1 |
 | BT-2 | Local interface for scripts: `rim-cli send <contact> <text>`, stdin piping, and a local-only Unix socket / named pipe JSON API | P1 |
 | BT-3 | Bots are ordinary contacts: same auth, same E2EE, marked with a bot badge; they receive commands only from contacts on their allowlist | P1 |
+| BT-4 | **Rogue**, a public AI bot contact (ad-financed), added on first start and switchable in settings → bots. Marked as passing messages to an AI provider (TH-6) | P1 |
+| BT-5 | **Local AI bots**: any OpenAI-compatible endpoint with the user's key, called from this computer, never over the RIM network; chat kept in memory only | P2 |
+| BT-6 | Script API in the desktop app (same JSON lines as BT-2), off by default | P2 |
 
 ### 7.10 Window & docking
 
@@ -232,6 +242,26 @@ Gadgets are **plugins** in the docked sidebar below the buddy list. A plugin tha
 | GD-9 | **Player controls** for whatever player is active: title/artist, play/pause, previous, next. Windows: any app using the system media controls (Spotify, browsers, VLC, foobar2000 …); Linux: any MPRIS player; macOS: see risk | P1 |
 | GD-10 | **Now playing as status** (opt-in, off by default): current track shown to authorized contacts under your name, ICQ/MSN-era "listening to" | P1 |
 | GD-11 | All gadget network access is opt-in per service and shown in diagnostics; with no service configured, gadgets make no network calls | P1 |
+
+### 7.13 Other networks (optional plugins)
+
+For people who are tired of juggling messengers: plugins bring email and other networks into RIM's own buddy list
+and chat windows. All off by default, each a separate process with declared capabilities and no access to RIM's
+keys, contacts or history. RIM draws everything; no web pages, no embedded browsers.
+
+| ID | Requirement | Pri |
+|---|---|---|
+| HB-1 | Plugin API for networks: a plugin offers contacts, presence, chats, messages (in and out), unread counts and its login flow; RIM shows them in the buddy list and chat windows | P2 |
+| HB-2 | **Email** (IMAP/SMTP): people you write to become contacts in a `mail` folder, a correspondent's mails form one chat, plain text only, quotes and signatures trimmed | P2 |
+| HB-3 | **Send to anyone**: RIM encrypts a file, uploads only the ciphertext to storage the user chooses (own node, WebDAV/Nextcloud, S3) and gives a link with the key in the `#fragment`; the recipient's browser decrypts it on the RIM website. Expiry and download limit per link | P2 |
+| HB-4 | **Telegram** via TDLib (Telegram's own client library) | P2 |
+| HB-5 | **WhatsApp** via whatsmeow as a linked device. Unofficial and against WhatsApp's terms: the account can be blocked. Only after an explicit warning | P3 |
+| HB-6 | **Signal** via presage as a linked device. Unofficial, marked experimental | P3 |
+| HB-7 | Credentials and sessions of other networks only in the OS keychain or the plugin's own folder, never in RIM backups unless opted in | P2 |
+| HB-8 | Content RIM can't show becomes a text line with an action: `[voice message 0:12] [play]`, `[sticker]`, `[missed call]` | P2 |
+
+Each network gets its own folder (`mail`, `telegram`, `signal`, `whatsapp`) below the RIM contacts. Contacts there
+carry a network badge, chats show the network's level (TH-1) under the header, and notifications name the network.
 
 ### 7.12 Settings, keyboard & data
 
@@ -273,7 +303,7 @@ Gadgets are **plugins** in the docked sidebar below the buddy list. A plugin tha
 - A compromised unlocked device exposes everything on it.
 
 **Requirements:**
-- SEC-1 All payloads E2EE; no fallback to plaintext.
+- SEC-1 All RIM payloads E2EE; no fallback to plaintext. Plugins for other networks (§7.13) are outside this guarantee and always marked (TH-1..6).
 - SEC-2 Forward secrecy and post-compromise security for 1:1.
 - SEC-3 History DB encrypted at rest (SQLCipher, Argon2id key).
 - SEC-4 Keys zeroized in memory after use; never logged.
@@ -282,6 +312,24 @@ Gadgets are **plugins** in the docked sidebar below the buddy list. A plugin tha
 - SEC-7 Independent security audit before 1.0.
 - SEC-8 No telemetry, no crash reporting without explicit opt-in per report.
 - SEC-9 **Published protocol specification** (wire format, key schedule, mailbox derivation, device lists) versioned in `docs/protocol/`, kept in sync with the code; the audit covers spec and implementation.
+
+**Transport honesty.** The user always knows how a conversation travels. Every conversation has one of four levels:
+
+| Level | Meaning | Mark |
+|---|---|---|
+| **A** direct | RIM, end-to-end encrypted, direct peer-to-peer | none (the normal case) |
+| **B** relayed | RIM, end-to-end encrypted, but via relay, Nostr mailbox or buddy relay | `via relay` / `stored in network` |
+| **C** other network | through a third-party service, bridge or bot that passes messages on; decrypted by that service's client, bridge or provider | network badge, warning colour, banner |
+| **D** unencrypted | readable in transit or on servers, e.g. email without PGP or S/MIME | red badge, banner |
+
+| ID | Requirement | Pri |
+|---|---|---|
+| TH-1 | The level is shown per conversation, and per message where the path varies (A or B) | P1 |
+| TH-2 | C and D: a banner in the chat window and a line in the compose field that can't be dismissed | P1 |
+| TH-3 | D: the first send on each unencrypted channel asks for confirmation once | P1 |
+| TH-4 | Contacts of other networks never look like RIM contacts: own icon, colour and network badge in the list and in notifications | P1 |
+| TH-5 | Diagnostics (NW-6) list every channel (RIM direct and relayed peers, each plugin) with its level | P1 |
+| TH-6 | RIM bots that pass messages on (Rogue to its AI provider) are marked C: end-to-end to the bot, then readable by the provider | P1 |
 
 ---
 
@@ -321,7 +369,8 @@ No telemetry, so measured via:
 | **M1 — MVP (P0)** | Desktop app: account, single/expiring invites, auth, buddy list, statuses, OS/device icons, 1:1 chat, **Nostr-only** offline mailbox + cleanup, history, direct file transfer, backup/restore, docking on Windows + X11, tray |
 | **M2 — Beta** | P1: multi-device + remote logout, scheduled backups, introductions, note to self, urgent flag, hotkeys, DHT mailbox + buddy relays, docking on Wayland/macOS, headless node + Docker/Pi package, bot mode, plugin host + first-party plugins (pomodoro, todo.txt/CalDAV, player), diagnostics, themes, sounds, fuzzing + external audit |
 | **M3 — 1.0** | Groups, audit fixes, signed releases on 3 OSes, protocol spec 1.0, docs |
-| **Later** | Mobile companion (another device on the same account), Tor, voice, MLS groups |
+| **M4 — Hub** | Network plugin API (HB-1, HB-8), email (HB-2), transport honesty (TH-1..6), send to anyone (HB-3), Telegram (HB-4), then Signal (HB-6) and WhatsApp with warning (HB-5) |
+| **Later** | Mobile companion (another device on the same account), Tor, MLS groups |
 
 ---
 
@@ -353,6 +402,10 @@ No telemetry, so measured via:
 | Impersonation via look-alike nicknames | Med | Local petnames; add only by full key; safety-number verification |
 | Trademark claims (ICQ) | Med | Original name, art and sounds; no ICQ assets |
 | Crypto implementation bugs | High | Use vodozemac/libp2p primitives only, no custom crypto, published spec, audit |
+| Users take a bridged or mail chat for a RIM-encrypted one | High | Transport honesty (TH-1..6): levels, banners, badges, first-send confirmation |
+| WhatsApp blocks accounts that use an unofficial client (HB-5) | High | Off by default; explicit warning before linking; the user decides |
+| Signal or WhatsApp protocol changes break their plugins | Med | Isolated per plugin, marked experimental, RIM itself unaffected |
+| Mail providers drop password logins (OAuth only, e.g. Outlook.com) | Med | App passwords where offered; OAuth later; providers with IMAP passwords work |
 
 ---
 
