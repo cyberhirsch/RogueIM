@@ -28,6 +28,7 @@ pub fn first_party() -> Vec<Manifest> {
         m("todo", "Todo", "todo.txt or CalDAV tasks; \"add as task\" in chats.", &["chat.context_menu", "network:caldav"]),
         m("player", "Player", "Controls the active media player; can share what you listen to.", &["presence.now_playing"]),
         m("mail", "Mail", "Your email in the buddy list: people you write to become contacts, their mails one chat. Not end-to-end encrypted.", &["chats", "network:imap", "network:smtp"]),
+        m("whatsapp", "WhatsApp", "Your WhatsApp chats in the buddy list, linked like WhatsApp Web. Unofficial: WhatsApp may block the number; asks before it connects.", &["chats", "network:whatsapp"]),
     ]
 }
 

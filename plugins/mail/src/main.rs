@@ -247,7 +247,7 @@ fn main() {
         eprintln!("rim-plugin-mail is started by RogueIM (settings > plugins).");
         std::process::exit(2);
     };
-    p.send(&ToHost::Channel { label: "mail".into(), level: "D".into(), warning: WARNING.into(), add_hint: "an email address".into() });
+    p.send(&ToHost::Channel { label: "mail".into(), level: "D".into(), warning: WARNING.into(), add_hint: "an email address".into(), files: false });
     let (jobs, job_rx) = mpsc::channel();
     let (up_tx, up_rx) = mpsc::channel();
     imap::spawn(job_rx, up_tx);

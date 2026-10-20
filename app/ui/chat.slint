@@ -22,6 +22,11 @@ export struct ChatLine {
     file-state: string,
     has-image: bool,
     image: image,
+    // Up to two links of a message from another network ("[play]"), by id and label.
+    act1: string,
+    act1-label: string,
+    act2: string,
+    act2-label: string,
 }
 
 // Square glyph button for the title bar.
@@ -75,6 +80,8 @@ export component ChatPane inherits Rectangle {
     in property <color> warn-color;
     in property <string> tag;
     in property <string> compose-hint;
+    in property <bool> net-files;
+    // Another network that takes pictures and files.
     // The text being typed (set back when a send was cancelled).
     in-out property <string> draft <=> input.text;
     in property <string> name;
@@ -239,6 +246,12 @@ export component ChatPane inherits Rectangle {
                             color: l.state == "failed" ? Theme.red : (l.state == "queued" ? Theme.dim : Theme.fg);
                             selection-background-color: Theme.accent;
                             selection-foreground-color: Theme.on-accent;
+                        }
+                        if l.act1 != "": HorizontalLayout {
+                            spacing: 6px;
+                            alignment: start;
+                            LinkText { text: "[" + l.act1-label + "]"; clicked => { root.line-action("net:" + l.act1, l.id); } }
+                            if l.act2 != "": LinkText { text: "[" + l.act2-label + "]"; clicked => { root.line-action("net:" + l.act2, l.id); } }
                         }
                         if l.id == root.editing-id: RInput {
                             text: l.text;
@@ -406,9 +419,9 @@ export component ChatPane inherits Rectangle {
                     font-size: Theme.fs;
                 }
             }
-            if root.mode != "group" && root.mode != "bot" && root.mode != "net": TButton {
+            if root.mode != "group" && root.mode != "bot" && (root.mode != "net" || root.net-files): TButton {
                 glyph: "+";
-                tip: "send a file (direct connection only; you can also drop files here)";
+                tip: root.mode == "net" ? "send a picture or file" : "send a file (direct connection only; you can also drop files here)";
                 height: 24px;
                 clicked => { root.file-send(); }
             }
@@ -453,6 +466,7 @@ export component ChatWindow inherits Window {
     in property <color> warn-color;
     in property <string> tag;
     in property <string> compose-hint;
+    in property <bool> net-files;
     in-out property <string> draft;
     // "", "calling", "ringing", "active": the call with this contact
     in property <string> call-state;
@@ -496,6 +510,7 @@ export component ChatWindow inherits Window {
         warn-color: root.warn-color;
         tag: root.tag;
         compose-hint: root.compose-hint;
+        net-files: root.net-files;
         draft <=> root.draft;
         send(t, u, r) => { root.send(t, u, r); }
         typed => { root.typed(); }

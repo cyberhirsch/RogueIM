@@ -10,7 +10,9 @@ on:
 env:
   CARGO_TERM_COLOR: always
   PKGS: -p rogueim -p rim-cli -p rim-plugin-pomodoro -p rim-plugin-todo -p rim-plugin-player -p rim-plugin-mail
-  BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail
+  BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail rim-plugin-whatsapp
+  # Go plugins, built with CGO off (pure Go SQLite), so they cross-compile.
+  CGO_ENABLED: "0"
 
 jobs:
   test:
@@ -30,6 +32,12 @@ jobs:
       # get flaky timeouts when all of them run at once.
       - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo -p rim-plugin-mail -- --test-threads=2
       - run: cargo build -p rogueim -p rim-cli
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: plugins/whatsapp/go.mod
+          cache-dependency-path: plugins/whatsapp/go.sum
+      - run: go vet ./... && go test ./...
+        working-directory: plugins/whatsapp
 
   build:
     name: build (${{ matrix.name }})
@@ -60,17 +68,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: ${{ matrix.name }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: plugins/whatsapp/go.mod
+          cache-dependency-path: plugins/whatsapp/go.sum
 
       - name: Build
         if: runner.os != 'macOS'
         shell: bash
-        run: cargo build --release $PKGS
+        run: |
+          cargo build --release $PKGS
+          ext=""; [ "$RUNNER_OS" = "Windows" ] && ext=".exe"
+          (cd plugins/whatsapp && go build -trimpath -ldflags "-s -w" -o "../../target/release/rim-plugin-whatsapp$ext" .)
 
       - name: Build (macOS universal)
         if: runner.os == 'macOS'
         run: |
           cargo build --release $PKGS --target aarch64-apple-darwin
           cargo build --release $PKGS --target x86_64-apple-darwin
+          (cd plugins/whatsapp && GOARCH=arm64 go build -trimpath -ldflags "-s -w" -o ../../target/aarch64-apple-darwin/release/rim-plugin-whatsapp .)
+          (cd plugins/whatsapp && GOARCH=amd64 go build -trimpath -ldflags "-s -w" -o ../../target/x86_64-apple-darwin/release/rim-plugin-whatsapp .)
           mkdir -p target/release
           for b in $BINS; do
             lipo -create -output target/release/$b \
@@ -110,7 +127,7 @@ jobs:
           app="dist/dmg/RogueIM.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           # Everything lives inside the app: programs, plugins, the CLI, docs.
-          for b in rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail; do cp "target/release/$b" "$app/Contents/MacOS/"; done
+          for b in rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail rim-plugin-whatsapp; do cp "target/release/$b" "$app/Contents/MacOS/"; done
           cp README.md LICENSE "$app/Contents/Resources/"
           sed "s/@VERSION@/$version/" deploy/macos/Info.plist > "$app/Contents/Info.plist"
           mkdir -p icon.iconset

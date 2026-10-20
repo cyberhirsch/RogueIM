@@ -27,7 +27,7 @@ pub const SOCKET_ENV: &str = "RIM_PLUGIN_SOCKET";
 /// laid out side by side.
 #[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
 pub struct Item {
-    /// "title", "text", "dim", "button", "input", "progress", "check"
+    /// "title", "text", "dim", "button", "input", "progress", "check", "qr"
     pub kind: String,
     pub id: String,
     pub text: String,
@@ -65,6 +65,10 @@ impl Item {
     pub fn progress(value: f32, row: u32) -> Self {
         Item { value, ..Self::new("progress", "", "", row) }
     }
+    /// A QR code of `text`, drawn by RogueIM (e.g. for linking a phone).
+    pub fn qr(text: &str, row: u32) -> Self {
+        Self::new("qr", "", text, row)
+    }
     pub fn check(id: &str, text: &str, checked: bool, row: u32) -> Self {
         Item { checked, ..Self::new("check", id, text, row) }
     }
@@ -99,6 +103,19 @@ pub struct NetLine {
     /// Own messages: "sending", "sent" or "failed".
     #[serde(default)]
     pub state: String,
+    /// A picture to show: a file the plugin saved on this computer.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
+    /// Up to two links after the text, e.g. `[play]` for a voice message (PRD HB-8).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actions: Vec<NetAction>,
+}
+
+/// A link on a message; clicking it sends [`ToPlugin::Action`].
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct NetAction {
+    pub id: String,
+    pub label: String,
 }
 
 /// Plugin -> RogueIM.
@@ -132,6 +149,9 @@ pub enum ToHost {
         warning: String,
         #[serde(default)]
         add_hint: String,
+        /// The network takes pictures and files ([`ToPlugin::SendFile`]).
+        #[serde(default)]
+        files: bool,
     },
     /// capability `chats`: the whole contact list, replacing the last one.
     Contacts { list: Vec<NetContact> },
@@ -167,6 +187,10 @@ pub enum ToPlugin {
     Add { address: String },
     /// capability `chats`: the user took a contact off the list.
     Remove { chat: String },
+    /// capability `chats`: the user clicked a link of a message ([`NetAction`]).
+    Action { chat: String, line: String, id: String },
+    /// capability `chats`: the user sent a file or picture (a path on this computer).
+    SendFile { chat: String, path: String },
     Stop,
 }
 
@@ -236,7 +260,7 @@ mod tests {
 
     #[test]
     fn chats_serde_shape() {
-        let m = ToHost::Lines { chat: "a@b.c".into(), lines: vec![NetLine { id: "i:7".into(), ts: 1, from_me: false, who: "Anna".into(), text: "hi".into(), state: String::new() }] };
+        let m = ToHost::Lines { chat: "a@b.c".into(), lines: vec![NetLine { id: "i:7".into(), ts: 1, from_me: false, who: "Anna".into(), text: "hi".into(), ..Default::default() }] };
         let s = serde_json::to_string(&m).unwrap();
         assert_eq!(s, r#"{"t":"lines","chat":"a@b.c","lines":[{"id":"i:7","ts":1,"from_me":false,"who":"Anna","text":"hi","state":""}]}"#);
         // Optional fields may be left out by plugins.

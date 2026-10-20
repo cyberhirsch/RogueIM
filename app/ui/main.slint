@@ -38,7 +38,7 @@ export struct PickRow { id: string, name: string, checked: bool }
 export struct SearchRow { id: string, name: string, time: string, text: string }
 export struct MemberRow { account: string, name: string, admin: bool }
 
-export struct GadgetItem { kind: string, id: string, text: string, hint: string, value: float, checked: bool }
+export struct GadgetItem { kind: string, id: string, text: string, hint: string, value: float, checked: bool, image: image }
 export struct GadgetRow { items: [GadgetItem] }
 export struct Gadget { id: string, name: string, collapsed: bool, rows: [GadgetRow] }
 export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool, usage: string, first: bool, last: bool }
@@ -54,7 +54,7 @@ component GadgetItemView inherits Rectangle {
     // the text of an input while it is typed (input() comes on Enter)
     callback edit(string);
     callback check(bool);
-    min-height: 18px;
+    min-height: root.item.kind == "qr" ? 230px : 18px;
     horizontal-stretch: root.item.kind == "button" ? 0 : 1;
     if root.item.kind == "title": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.accent; font-size: Theme.small; font-weight: 700; vertical-alignment: center; horizontal-alignment: left; overflow: elide; }
     if root.item.kind == "text": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-alignment: left; overflow: elide; }
@@ -72,6 +72,14 @@ component GadgetItemView inherits Rectangle {
         height: 5px;
         background: Theme.line;
         Rectangle { x: 0; width: parent.width * max(0.0, min(1.0, root.item.value)); background: Theme.accent; }
+    }
+    // Black on white whatever the theme, so phones can read it.
+    if root.item.kind == "qr": Image {
+        x: 0;
+        width: min(parent.width, 230px);
+        height: self.width;
+        source: root.item.image;
+        image-rendering: pixelated;
     }
     if root.item.kind == "check": RCheck { x: 0; width: parent.width; text: root.item.text; checked: root.item.checked; toggled(v) => { root.check(v); } }
 }
@@ -254,6 +262,7 @@ export component MainWindow inherits Window {
     in property <color> dchat-warn-color;
     in property <string> dchat-tag;
     in property <string> dchat-hint;
+    in property <bool> dchat-net-files;
     in-out property <string> dchat-draft;
 
     // plugins
@@ -1209,6 +1218,7 @@ export component MainWindow inherits Window {
                 warn-color: root.dchat-warn-color;
                 tag: root.dchat-tag;
                 compose-hint: root.dchat-hint;
+                net-files: root.dchat-net-files;
                 draft <=> root.dchat-draft;
                 can-task: root.can-task;
                 send(t, u, r) => { root.dchat-send(t, u, r); }

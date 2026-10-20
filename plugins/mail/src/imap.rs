@@ -694,7 +694,7 @@ impl Worker {
         let name = self.people.get(&to).map(|p| p.name.clone()).unwrap_or_default();
         self.pending += 1;
         let pid = format!("p:{}", self.pending);
-        let mut l = NetLine { id: pid.clone(), ts: now(), from_me: true, who: acc.display_name(), text: text_.to_string(), state: "sending".into() };
+        let mut l = NetLine { id: pid.clone(), ts: now(), from_me: true, who: acc.display_name(), text: text_.to_string(), state: "sending".into(), ..Default::default() };
         self.push_line(&to, l.clone(), tx);
         let built = smtp::build(&acc, &to, &name, text_, self.reply.get(&to));
         if let Ok((_, id)) = &built {
@@ -774,7 +774,7 @@ fn line(msg: &mail_parser::Message<'_>, id: String, mine: bool, who: String, fil
     let subject = msg.subject().unwrap_or("").to_string();
     let mid = msg.message_id().map(|m| format!("<{m}>")).unwrap_or_default();
     let refs = msg.references().as_text_list().map(|v| v.iter().map(|r| format!("<{r}>")).collect::<Vec<_>>().join(" ")).or_else(|| msg.references().as_text().map(|r| format!("<{r}>"))).unwrap_or_default();
-    (NetLine { id, ts, from_me: mine, who, text: text::chat_text(msg, files), state: String::new() }, subject, mid, refs)
+    (NetLine { id, ts, from_me: mine, who, text: text::chat_text(msg, files), ..Default::default() }, subject, mid, refs)
 }
 
 #[cfg(test)]

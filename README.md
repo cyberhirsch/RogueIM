@@ -79,7 +79,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Without a direct path | Messages over a live Nostr subscription (about a second), presence over short-lived Nostr signals |
 | Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), drag & drop files onto chats, tray with your own OS icon, notifications, per-event sounds, rebindable global hotkeys, autostart (optionally hidden), Away on screen lock, idle lock, optional passphrase in the OS keychain |
 | Themes | graphite (default), grey, green, amber; bundled Hack monospace font |
-| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail (see below) |
+| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail and WhatsApp (see below) |
 | Headless | `rim-cli` as node (relay/DHT/mailbox helper), bot with a local JSON API, one-shot sender |
 
 ## Known limitations of the alpha
@@ -93,6 +93,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 - "Remember on this computer" puts the passphrase in the OS keychain; anyone logged in as you can then open RIM. A remote lock removes it.
 - Only the first-party plugins are loaded. Third-party plugins and plugin signing come later.
 - The mail plugin has been tested against a local test server (GreenMail) only, not yet against real mail providers.
+- The WhatsApp plugin is tested up to the QR code; linking a real account has not been tested yet.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
 - No installers yet: archives only.
@@ -110,6 +111,21 @@ with a password). The password is kept in the OS keychain. RogueIM stores no mai
 - New mail is checked every minute. Mail from someone on the list rings and pops up like a RogueIM message.
 - Mail is not end-to-end encrypted: your provider and the recipient's can read it. Every mail chat says so, the input is
   tagged `[mail]`, and the first mail you send asks once.
+
+## WhatsApp
+
+Settings → plugins → **WhatsApp**: your WhatsApp chats in the buddy list, in RogueIM's own chat windows.
+
+- **Read the warning first.** WhatsApp has no official way in for other programs. The plugin links RogueIM like
+  WhatsApp Web, through the unofficial library [whatsmeow](https://github.com/tulir/whatsmeow). That breaks WhatsApp's
+  terms: WhatsApp can block your number, for a while or for good. Nothing connects until you accept this in the plugin.
+- Link by scanning the QR code in the sidebar (WhatsApp → Settings → Linked devices), or with an 8-digit code: type
+  your number into the plugin and enter the code on your phone. "unlink" removes RogueIM from your phone again.
+- Chats from the last 60 days appear in a **whatsapp** folder, groups included. Text and pictures show in the chat;
+  voice messages, videos, files and locations become a line with a link (`[voice message 0:12] [play]`). You can send
+  text, pictures (Ctrl+V or **+**) and files. Opening a chat marks it read on WhatsApp too.
+- Level C: WhatsApp encrypts end to end, this computer decrypts. WhatsApp's servers see who you write to and when.
+  The link, keys and a copy of your messages stay in the plugin's folder in your RogueIM profile.
 
 ## Run a node
 
@@ -163,7 +179,7 @@ crates/rim-core         engine: identity, Olm/Megolm, libp2p swarm, Nostr mailbo
 crates/rim-cli          headless peer: node, bot, scripting
 crates/rim-plugin-sdk   plugin protocol (JSON lines over a local socket)
 app/                    Slint desktop app (ui/*.slint, src/dock.rs = docking)
-plugins/                pomodoro, todo, player, mail
+plugins/                pomodoro, todo, player, mail, whatsapp (Go)
 deploy/                 Dockerfile, systemd unit, .deb scripts
 docs/                   PRD, tech stack, protocol spec
 ```

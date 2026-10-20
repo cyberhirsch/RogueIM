@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use rim_core::engine::{RestoreSecret, StartMode};
 use rim_core::store::Store;
 use rim_core::*;
-use rim_plugin_sdk::{Item, NetContact, NetLine, ToHost, ToPlugin};
+use rim_plugin_sdk::{Item, NetAction, NetContact, NetLine, ToHost, ToPlugin};
 use slint::{CloseRequestResponse, Color, ComponentHandle, Model, ModelRc, SharedString, VecModel};
 use time::UtcOffset;
 
@@ -275,6 +275,8 @@ struct App {
     share_frame: Vec<ShareEdge>,
     /// Decoded pictures by message id.
     images: HashMap<u64, slint::Image>,
+    /// Links on messages of other networks, by line: (the plugin's line id, its links).
+    net_actions: HashMap<u64, (String, Vec<NetAction>)>,
     image_windows: Vec<ImageWindow>,
     /// Chat line models, updated row by row (replacing them makes the chat flicker).
     chat_models: HashMap<String, Rc<VecModel<ChatLine>>>,
@@ -356,6 +358,9 @@ fn file_state(s: FileState) -> &'static str {
 }
 
 fn chat_line(app: &App, l: &LineView) -> ChatLine {
+    let act = |i: usize| -> (SharedString, SharedString) {
+        app.net_actions.get(&l.id).and_then(|(_, v)| v.get(i)).map(|a| (a.id.clone().into(), a.label.clone().into())).unwrap_or_default()
+    };
     let f = l.file.as_ref().map(|f| app.files.get(&f.id).cloned().unwrap_or_else(|| f.clone()));
     ChatLine {
         id: l.id.to_string().into(),
@@ -385,6 +390,10 @@ fn chat_line(app: &App, l: &LineView) -> ChatLine {
         file_state: f.as_ref().map(|f| file_state(f.state)).unwrap_or("").into(),
         has_image: l.image.is_some(),
         image: app.images.get(&l.id).cloned().unwrap_or_default(),
+        act1: act(0).0,
+        act1_label: act(0).1,
+        act2: act(1).0,
+        act2_label: act(1).1,
     }
 }
 
@@ -394,6 +403,33 @@ fn decode_picture(b64: &str) -> Option<slint::Image> {
     let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
     let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height());
     Some(slint::Image::from_rgba8(buf))
+}
+
+/// A picture file (from a plugin) for the UI, big photos scaled down.
+fn load_picture(path: &Path) -> Option<slint::Image> {
+    let mut img = image::open(path).ok()?;
+    if img.width().max(img.height()) > 1600 {
+        img = img.thumbnail(1600, 1600);
+    }
+    let img = img.to_rgba8();
+    let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(img.as_raw(), img.width(), img.height());
+    Some(slint::Image::from_rgba8(buf))
+}
+
+/// A QR code, black on white with a quiet zone, so phones read it on any theme.
+fn qr_image(text: &str) -> slint::Image {
+    let Ok(code) = qrcode::QrCode::new(text.as_bytes()) else { return slint::Image::default() };
+    let (n, quiet, scale) = (code.width(), 4usize, 4usize);
+    let side = (n + 2 * quiet) * scale;
+    let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(side as u32, side as u32);
+    let colors = code.to_colors();
+    for (i, px) in buf.make_mut_slice().iter_mut().enumerate() {
+        let (x, y) = ((i % side) / scale, (i / side) / scale);
+        let dark = x >= quiet && y >= quiet && x < n + quiet && y < n + quiet && colors[(y - quiet) * n + (x - quiet)] == qrcode::Color::Dark;
+        let v = if dark { 0 } else { 255 };
+        *px = slint::Rgba8Pixel { r: v, g: v, b: v, a: 255 };
+    }
+    slint::Image::from_rgba8(buf)
 }
 
 /// Replace only the rows that changed (rebuilding the list makes it flicker).
@@ -446,6 +482,8 @@ struct Header {
     warn_color: Color,
     tag: String,
     hint: String,
+    /// Another network that takes pictures and files.
+    files: bool,
 }
 
 fn header_for(app: &App, key: &str) -> Header {
@@ -467,6 +505,7 @@ fn header_for(app: &App, key: &str) -> Header {
         warn_color: acc,
         tag: String::new(),
         hint: String::new(),
+        files: false,
     };
     match mode_of(key) {
         "notes" => empty("note to self", "synced to your devices", "notes", ""),
@@ -494,6 +533,7 @@ fn header_for(app: &App, key: &str) -> Header {
                         warn_color: col,
                         tag: String::new(),
                         hint: String::new(),
+                        files: false,
                     },
                     None => {
                         let mut h = empty(id, "not on the list any more", net_device(&n.label), "");
@@ -505,6 +545,7 @@ fn header_for(app: &App, key: &str) -> Header {
                 h.warn_color = col;
                 h.tag = n.label.clone();
                 h.hint = format!("{} · {}", n.label, if n.level == "D" { "not encrypted" } else { "not RIM-encrypted" });
+                h.files = n.files;
                 h
             }
             None => {
@@ -544,6 +585,7 @@ fn header_for(app: &App, key: &str) -> Header {
                 warn_color: tint(Status::Away, dark),
                 tag: if is_rogue(app, &c.id) { "AI".into() } else { String::new() },
                 hint: String::new(),
+                files: false,
             },
             None => {
                 let mut h = empty("?", "", "", "");
@@ -583,6 +625,7 @@ fn apply_header_window(w: &ChatWindow, h: &Header) {
     w.set_warn_color(h.warn_color);
     w.set_tag(h.tag.clone().into());
     w.set_compose_hint(h.hint.clone().into());
+    w.set_net_files(h.files);
 }
 
 fn apply_header_docked(m: &MainWindow, h: &Header) {
@@ -600,6 +643,7 @@ fn apply_header_docked(m: &MainWindow, h: &Header) {
     m.set_dchat_warn_color(h.warn_color);
     m.set_dchat_tag(h.tag.clone().into());
     m.set_dchat_hint(h.hint.clone().into());
+    m.set_dchat_net_files(h.files);
 }
 
 fn refresh_chat(app: &AppRc, key: &str) {
@@ -608,7 +652,11 @@ fn refresh_chat(app: &AppRc, key: &str) {
         let mut a = app.borrow_mut();
         let todo: Vec<(u64, String)> = a.histories.get(key).map(|v| v.iter().filter(|l| !a.images.contains_key(&l.id)).filter_map(|l| l.image.clone().map(|i| (l.id, i))).collect()).unwrap_or_default();
         for (id, b64) in todo {
-            if let Some(img) = decode_picture(&b64) {
+            let img = match b64.strip_prefix("file:") {
+                Some(path) => load_picture(Path::new(path)),
+                None => decode_picture(&b64),
+            };
+            if let Some(img) = img {
                 a.images.insert(id, img);
             }
         }
@@ -732,6 +780,13 @@ fn chat_line_action(app: &AppRc, key: &str, action: &str, arg: &str) {
                 open_picture(app, key, id);
             }
         }
+        a if a.starts_with("net:") && mode_of(key) == "net" => {
+            let Some((p, chat)) = net_key(key) else { return };
+            let line = arg.parse::<u64>().ok().and_then(|id| app.borrow().net_actions.get(&id).map(|(l, _)| l.clone()));
+            if let Some(line) = line {
+                app.borrow().host.send(p, &ToPlugin::Action { chat: chat.to_string(), line, id: a[4..].to_string() });
+            }
+        }
         "delete" if mode_of(key) == "contact" => {
             if let Ok(id) = arg.parse() {
                 app.borrow().send(Command::DeleteText { id: key.to_string(), msg: id });
@@ -748,7 +803,15 @@ fn chat_edit(app: &AppRc, key: &str, id: &str, text: &str) {
 }
 
 fn chat_file_send(app: &AppRc, key: &str) {
-    if matches!(mode_of(key), "group" | "bot" | "net") {
+    if mode_of(key) == "net" {
+        if net_takes_files(&app.borrow(), key) {
+            if let Some(path) = rfd::FileDialog::new().set_title("Send a picture or file").pick_file() {
+                net_send_file(app, key, &path);
+            }
+        }
+        return;
+    }
+    if matches!(mode_of(key), "group" | "bot") {
         return;
     }
     let Some(path) = rfd::FileDialog::new().set_title("Send a file (direct connection only)").pick_file() else { return };
@@ -1723,6 +1786,8 @@ struct Net {
     warning: String,
     /// What the add field takes for this network, e.g. "an email address".
     add_hint: String,
+    /// Takes pictures and files.
+    files: bool,
     contacts: Vec<NetContact>,
 }
 
@@ -1774,7 +1839,7 @@ fn net_line(key: &str, l: &NetLine) -> LineView {
         urgent: false,
         expires: None,
         file: None,
-        image: None,
+        image: (!l.image.is_empty()).then(|| format!("file:{}", l.image)),
     }
 }
 
@@ -1802,26 +1867,35 @@ fn net_for_address(a: &App, s: &str) -> Option<String> {
 /// channel asks once (TH-3); a "no" puts the text back into the input.
 fn net_send(app: &AppRc, key: &str, text: &str) {
     let Some((p, id)) = net_key(key) else { return };
-    let (label, level, warning, agreed) = {
-        let a = app.borrow();
-        let Some(n) = a.nets.get(p) else { return };
-        (n.label.clone(), n.level.clone(), n.warning.clone(), a.settings.plain_ok.iter().any(|x| x == p))
-    };
-    if level == "D" && !agreed {
-        let answer = rfd::MessageDialog::new()
-            .set_title(format!("Send by {label}?"))
-            .set_description(format!("{warning}\n\nSend it anyway? RogueIM won't ask again for {label}."))
-            .set_buttons(rfd::MessageButtons::YesNo)
-            .show();
-        if answer != rfd::MessageDialogResult::Yes {
-            set_draft(app, key, text);
-            return;
-        }
-        let mut a = app.borrow_mut();
-        a.settings.plain_ok.push(p.to_string());
-        save_settings(&a.dir, &a.settings);
+    if !net_agreed(app, p) {
+        set_draft(app, key, text);
+        return;
     }
     app.borrow().host.send(p, &ToPlugin::Send { chat: id.to_string(), text: text.to_string() });
+}
+
+/// On an unencrypted channel the user agrees once, before the first send (TH-3).
+fn net_agreed(app: &AppRc, p: &str) -> bool {
+    let (label, level, warning, agreed) = {
+        let a = app.borrow();
+        let Some(n) = a.nets.get(p) else { return false };
+        (n.label.clone(), n.level.clone(), n.warning.clone(), a.settings.plain_ok.iter().any(|x| x == p))
+    };
+    if level != "D" || agreed {
+        return true;
+    }
+    let answer = rfd::MessageDialog::new()
+        .set_title(format!("Send by {label}?"))
+        .set_description(format!("{warning}\n\nSend it anyway? RogueIM won't ask again for {label}."))
+        .set_buttons(rfd::MessageButtons::YesNo)
+        .show();
+    if answer != rfd::MessageDialogResult::Yes {
+        return false;
+    }
+    let mut a = app.borrow_mut();
+    a.settings.plain_ok.push(p.to_string());
+    save_settings(&a.dir, &a.settings);
+    true
 }
 
 /// Put text back into a chat's input.
@@ -1835,6 +1909,19 @@ fn set_draft(app: &AppRc, key: &str, text: &str) {
     if let Some(w) = a.chats.get(key) {
         w.set_draft(text.into());
     }
+}
+
+fn net_takes_files(a: &App, key: &str) -> bool {
+    net_key(key).and_then(|(p, _)| a.nets.get(p)).is_some_and(|n| n.files)
+}
+
+/// A file or picture into a chat of another network, after the same one-time question as text (TH-3).
+fn net_send_file(app: &AppRc, key: &str, path: &Path) {
+    let Some((p, id)) = net_key(key) else { return };
+    if !net_agreed(app, p) {
+        return;
+    }
+    app.borrow().host.send(p, &ToPlugin::SendFile { chat: id.to_string(), path: path.to_string_lossy().into_owned() });
 }
 
 /// Right-click on a contact of another network: take it off the list.
@@ -2302,6 +2389,7 @@ fn main() {
         voice: None,
         share_frame: vec![],
         images: HashMap::new(),
+        net_actions: HashMap::new(),
         image_windows: vec![],
         chat_models: HashMap::new(),
         dock_model: Rc::new(VecModel::default()),
@@ -3525,7 +3613,8 @@ fn stop_plugin(app: &AppRc, id: &str) {
 }
 
 fn gadget_item(i: &Item) -> GadgetItem {
-    GadgetItem { kind: i.kind.clone().into(), id: i.id.clone().into(), text: i.text.clone().into(), hint: i.hint.clone().into(), value: i.value, checked: i.checked }
+    let image = if i.kind == "qr" { qr_image(&i.text) } else { slint::Image::default() };
+    GadgetItem { kind: i.kind.clone().into(), id: i.id.clone().into(), text: i.text.clone().into(), hint: i.hint.clone().into(), value: i.value, checked: i.checked, image }
 }
 
 /// Replace only the rows that changed, so inputs the user is typing in survive.
@@ -3611,7 +3700,7 @@ fn poll_plugins(app: &AppRc) {
                 a.plugin_net.retain(|(p, _, why)| !(p == &id && why == &purpose));
                 a.plugin_net.push((id.clone(), host, purpose));
             }
-            ToHost::Channel { label, level, warning, add_hint } => {
+            ToHost::Channel { label, level, warning, add_hint, files } => {
                 {
                     let mut a = app.borrow_mut();
                     let contacts = a.nets.remove(&id).map(|n| n.contacts).unwrap_or_default();
@@ -3619,7 +3708,7 @@ fn poll_plugins(app: &AppRc) {
                     // and the warning is never empty (TH-2).
                     let level = if level == "C" { "C" } else { "D" }.to_string();
                     let warning = if warning.trim().is_empty() { format!("not RIM-encrypted: this goes through {label}") } else { warning };
-                    a.nets.insert(id.clone(), Net { label, level, warning, add_hint, contacts });
+                    a.nets.insert(id.clone(), Net { label, level, warning, add_hint, files, contacts });
                 }
                 refresh_nets(app);
             }
@@ -3639,7 +3728,12 @@ fn poll_plugins(app: &AppRc) {
                 if app.borrow().nets.contains_key(&id) {
                     let key = format!("n:{id}:{chat}");
                     let views: Vec<LineView> = lines.iter().map(|l| net_line(&key, l)).collect();
-                    app.borrow_mut().histories.insert(key.clone(), views);
+                    let mut a = app.borrow_mut();
+                    for (v, l) in views.iter().zip(&lines) {
+                        a.net_actions.insert(v.id, (l.id.clone(), l.actions.clone()));
+                    }
+                    a.histories.insert(key.clone(), views);
+                    drop(a);
                     refresh_chat(app, &key);
                 }
             }
@@ -3953,13 +4047,27 @@ fn open_viewer(app: &AppRc, pipe: Arc<rim_core::engine::ScreenPipe>) {
 /// Ctrl+V in a chat: if the clipboard holds a picture, send it (with the
 /// typed text as caption). False lets the text field paste normally.
 fn paste_picture(app: &AppRc, key: &str, text: &str) -> bool {
-    if matches!(mode_of(key), "group" | "bot" | "net") {
+    let net = mode_of(key) == "net";
+    if matches!(mode_of(key), "group" | "bot") || (net && !net_takes_files(&app.borrow(), key)) {
         return false;
     }
     let Ok(mut cb) = arboard::Clipboard::new() else { return false };
     let Ok(pic) = cb.get_image() else { return false };
     let Some(rgba) = image::RgbaImage::from_raw(pic.width as u32, pic.height as u32, pic.bytes.into_owned()) else { return false };
     match encode_picture(image::DynamicImage::ImageRgba8(rgba)) {
+        // Other networks take a file: the picture goes through a temporary one.
+        Ok(jpeg) if net => {
+            let path = std::env::temp_dir().join(format!("rogueim-paste-{}.jpg", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0)));
+            match std::fs::write(&path, jpeg) {
+                Ok(()) => {
+                    net_send_file(app, key, &path);
+                    if !text.trim().is_empty() {
+                        net_send(app, key, text);
+                    }
+                }
+                Err(e) => notice(app, &e.to_string()),
+            }
+        }
         Ok(jpeg) => {
             let id = if key == "notes" { "self".to_string() } else { key.to_string() };
             app.borrow().send(Command::SendImage { id, jpeg, text: text.to_string() });
