@@ -7815,6 +7815,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "rim-plugin-phone"
+version = "0.1.8"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "getrandom 0.2.17",
+ "hmac 0.12.1",
+ "interprocess",
+ "rim-plugin-sdk",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+]
+
+[[package]]
 name = "rim-plugin-player"
 version = "0.1.8"
 dependencies = [

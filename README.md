@@ -79,7 +79,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Without a direct path | Messages over a live Nostr subscription (about a second), presence over short-lived Nostr signals |
 | Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), drag & drop files onto chats, tray with your own OS icon, notifications, per-event sounds, rebindable global hotkeys, autostart (optionally hidden), Away on screen lock, idle lock, optional passphrase in the OS keychain |
 | Themes | graphite (default), grey, green, amber; bundled Hack monospace font |
-| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail and WhatsApp (see below) |
+| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail, WhatsApp and your Android phone's messages (see below) |
 | Headless | `rim-cli` as node (relay/DHT/mailbox helper), bot with a local JSON API, one-shot sender |
 
 ## Known limitations of the alpha
@@ -94,6 +94,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 - Only the first-party plugins are loaded. Third-party plugins and plugin signing come later.
 - The mail plugin has been tested against a local test server (GreenMail) only, not yet against real mail providers.
 - The WhatsApp plugin is tested up to the QR code; linking a real account has not been tested yet.
+- The phone app is tested in the Android emulator with Google Messages (SMS in, reply out), not yet on a real phone.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
 - No installers yet: archives only.
@@ -126,6 +127,20 @@ Settings → plugins → **WhatsApp**: your WhatsApp chats in the buddy list, in
   text, pictures (Ctrl+V or **+**) and files. Opening a chat marks it read on WhatsApp too.
 - Level C: WhatsApp encrypts end to end, this computer decrypts. WhatsApp's servers see who you write to and when.
   The link, keys and a copy of your messages stay in the plugin's folder in your RogueIM profile.
+
+## Phone (Android)
+
+Settings → plugins → **Phone**, plus the **RogueIM Phone** app (`RogueIM-Phone.apk` with each release): the messages
+your Android phone shows as notifications appear in RogueIM, and you can answer them. It touches no messenger's
+protocol, so no account can be blocked for it, and it works for WhatsApp, Signal, SMS, Telegram and more alike.
+
+- Pair once: scan the QR code from the plugin with the app, then allow the app to read notifications. Phone and
+  computer talk directly in your own network, encrypted with the key from the QR code; there is no server.
+- Each conversation becomes a contact in a **phone** folder (`Anna` · WhatsApp). Answers go through the notification's
+  reply button; opening a chat marks it read on the phone where the app offers that.
+- Limits: only what arrives as a notification (no history, no pictures), and only while the phone is on and in the
+  same network. If you dismissed the notification on the phone, answer there.
+- Windows asks once whether `rim-plugin-phone` may receive connections: allow it for private networks.
 
 ## Run a node
 
@@ -179,7 +194,8 @@ crates/rim-core         engine: identity, Olm/Megolm, libp2p swarm, Nostr mailbo
 crates/rim-cli          headless peer: node, bot, scripting
 crates/rim-plugin-sdk   plugin protocol (JSON lines over a local socket)
 app/                    Slint desktop app (ui/*.slint, src/dock.rs = docking)
-plugins/                pomodoro, todo, player, mail, whatsapp (Go)
+plugins/                pomodoro, todo, player, mail, phone, whatsapp (Go)
+android/                RogueIM Phone, the Android app for the phone plugin
 deploy/                 Dockerfile, systemd unit, .deb scripts
 docs/                   PRD, tech stack, protocol spec
 ```

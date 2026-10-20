@@ -9,8 +9,8 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  PKGS: -p rogueim -p rim-cli -p rim-plugin-pomodoro -p rim-plugin-todo -p rim-plugin-player -p rim-plugin-mail
-  BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail rim-plugin-whatsapp
+  PKGS: -p rogueim -p rim-cli -p rim-plugin-pomodoro -p rim-plugin-todo -p rim-plugin-player -p rim-plugin-mail -p rim-plugin-phone
+  BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail rim-plugin-phone rim-plugin-whatsapp
   # Go plugins, built with CGO off (pure Go SQLite), so they cross-compile.
   CGO_ENABLED: "0"
 
@@ -30,7 +30,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       # Each engine test runs two or three full network nodes; the small CI runners
       # get flaky timeouts when all of them run at once.
-      - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo -p rim-plugin-mail -- --test-threads=2
+      - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo -p rim-plugin-mail -p rim-plugin-phone -- --test-threads=2
       - run: cargo build -p rogueim -p rim-cli
       - uses: actions/setup-go@v5
         with:
@@ -127,7 +127,7 @@ jobs:
           app="dist/dmg/RogueIM.app"
           mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
           # Everything lives inside the app: programs, plugins, the CLI, docs.
-          for b in rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail rim-plugin-whatsapp; do cp "target/release/$b" "$app/Contents/MacOS/"; done
+          for b in rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail rim-plugin-phone rim-plugin-whatsapp; do cp "target/release/$b" "$app/Contents/MacOS/"; done
           cp README.md LICENSE "$app/Contents/Resources/"
           sed "s/@VERSION@/$version/" deploy/macos/Info.plist > "$app/Contents/Info.plist"
           mkdir -p icon.iconset
@@ -158,9 +158,37 @@ jobs:
             dist/*setup.exe
             dist/*.deb
 
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      # Signed with the release key when the secrets are set, else with a debug key
+      # (then an update needs uninstalling the app first).
+      - name: Build and test the phone app
+        working-directory: android
+        env:
+          RIM_APK_KEY_B64: ${{ secrets.RIM_APK_KEY_B64 }}
+          RIM_APK_PASS: ${{ secrets.RIM_APK_PASS }}
+        run: |
+          if [ -n "$RIM_APK_KEY_B64" ]; then
+            echo "$RIM_APK_KEY_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            export RIM_APK_KEYSTORE="$RUNNER_TEMP/release.keystore"
+          fi
+          ./gradlew --no-daemon assembleRelease testDebugUnitTest
+          mkdir -p ../dist && cp app/build/outputs/apk/release/app-release.apk ../dist/RogueIM-Phone.apk
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RogueIM-Phone
+          path: dist/RogueIM-Phone.apk
+
   release:
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: [test, build]
+    needs: [test, build, android]
     runs-on: ubuntu-latest
     permissions:
       contents: write

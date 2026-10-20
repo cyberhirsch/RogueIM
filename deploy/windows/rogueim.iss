@@ -51,6 +51,7 @@ Source: "{#SourceDir}\rim-plugin-todo.exe"; DestDir: "{app}"; Flags: ignoreversi
 Source: "{#SourceDir}\rim-plugin-player.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\rim-plugin-mail.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\rim-plugin-whatsapp.exe"; DestDir: "{app}"; Flags: ignoreversion
+Source: "{#SourceDir}\rim-plugin-phone.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\sounds\*"; DestDir: "{app}\sounds"; Flags: ignoreversion
 Source: "{#SourceDir}\README.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#SourceDir}\LICENSE"; DestDir: "{app}"; Flags: ignoreversion
