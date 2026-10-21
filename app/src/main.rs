@@ -77,6 +77,11 @@ struct Settings {
     layout_updated: i64,
     update_check: bool,
     update_auto: bool,
+    /// Chats open in the lower half of the bar instead of their own windows.
+    chats_in_bar: bool,
+    custom_theme: CustomTheme,
+    /// When the theme last changed (synced between own devices, newest wins).
+    theme_updated: i64,
     /// Automatic updates became the default in 0.1.10; switched on once for
     /// profiles from before. Missing in older files, hence false there.
     #[serde(default)]
@@ -131,6 +136,9 @@ impl Default for Settings {
             layout_updated: 0,
             update_check: true,
             update_auto: true,
+            chats_in_bar: false,
+            custom_theme: CustomTheme::default(),
+            theme_updated: 0,
             update_auto_default: true,
             rogue: true,
             on_top: true,
@@ -158,6 +166,7 @@ fn save_settings(dir: &Path, s: &Settings) {
     let _ = std::fs::write(dir.join("ui.json"), serde_json::to_vec_pretty(s).unwrap_or_default());
 }
 
+#[derive(Clone, Copy)]
 struct Palette {
     name: &'static str,
     dark: bool,
@@ -174,16 +183,87 @@ struct Palette {
     other: u32,
 }
 
-/// Graphite (default, dark grey), Grey (Win9x-era silver), Green and Amber (terminal).
-const THEMES: [Palette; 4] = [
+/// Graphite (default, dark grey), Grey (Win9x-era silver), Green and Amber (terminal),
+/// Phosphor (white terminal), Solar (Solarized dark), DOS (blue file manager), Paper (light).
+/// "custom" is built from three colours of the user's (see `custom_palette`).
+const THEMES: [Palette; 8] = [
     Palette { name: "graphite", dark: true, bg: 0x1e1f22, panel: 0x2a2c30, line: 0x3a3d42, fg: 0xd6d6d6, dim: 0x8a8f98, faint: 0x54585f, accent: 0xe0a040, red: 0xff6b6b, hover: 0x34373c, on_accent: 0x1e1f22, other: 0x6cb6ff },
     Palette { name: "grey", dark: false, bg: 0xc0c0c0, panel: 0xffffff, line: 0x808080, fg: 0x000000, dim: 0x404040, faint: 0x808080, accent: 0x000080, red: 0xa00000, hover: 0xd8d8e8, on_accent: 0xffffff, other: 0x7a3e9d },
     Palette { name: "green", dark: true, bg: 0x070a07, panel: 0x0d130e, line: 0x1c3322, fg: 0x7cfc9a, dim: 0x3f7a4f, faint: 0x24402c, accent: 0xffb000, red: 0xff5b5b, hover: 0x1c3322, on_accent: 0x070a07, other: 0x00e5ff },
     Palette { name: "amber", dark: true, bg: 0x0a0700, panel: 0x140e02, line: 0x3a2a08, fg: 0xffb000, dim: 0x9a6a00, faint: 0x4a3500, accent: 0xffd870, red: 0xff5b5b, hover: 0x3a2a08, on_accent: 0x0a0700, other: 0x9ad0ff },
+    Palette { name: "phosphor", dark: true, bg: 0x0c0c0c, panel: 0x161616, line: 0x303030, fg: 0xe6e6e6, dim: 0x8c8c8c, faint: 0x484848, accent: 0x7fc7ff, red: 0xff6b6b, hover: 0x262626, on_accent: 0x0c0c0c, other: 0xffd27f },
+    Palette { name: "solar", dark: true, bg: 0x002b36, panel: 0x073642, line: 0x174b57, fg: 0x93a1a1, dim: 0x657b83, faint: 0x2f5560, accent: 0xb58900, red: 0xdc322f, hover: 0x0e414d, on_accent: 0x002b36, other: 0x268bd2 },
+    Palette { name: "dos", dark: true, bg: 0x0000a8, panel: 0x000088, line: 0x5555ff, fg: 0x55ffff, dim: 0xaaaaaa, faint: 0x5555aa, accent: 0xffff55, red: 0xff5555, hover: 0x0000d0, on_accent: 0x0000a8, other: 0x55ff55 },
+    Palette { name: "paper", dark: false, bg: 0xf4f1e8, panel: 0xfffdf7, line: 0xc9c2b0, fg: 0x1d1d1b, dim: 0x5f5a50, faint: 0xa39c8c, accent: 0xb03a2e, red: 0xc0392b, hover: 0xe8e2d2, on_accent: 0xfffdf7, other: 0x1f5fa8 },
 ];
 
-fn palette(name: &str) -> &'static Palette {
-    THEMES.iter().find(|p| p.name == name).unwrap_or(&THEMES[0])
+/// The user's own theme: three colours, the rest derived from them.
+#[derive(serde::Serialize, serde::Deserialize, Clone, PartialEq)]
+#[serde(default)]
+struct CustomTheme {
+    bg: String,
+    fg: String,
+    accent: String,
+}
+
+impl Default for CustomTheme {
+    fn default() -> Self {
+        CustomTheme { bg: "#1e1f22".into(), fg: "#d6d6d6".into(), accent: "#e0a040".into() }
+    }
+}
+
+/// "#1e1f22", "1e1f22" or "#123" -> 0x1e1f22
+fn parse_hex(s: &str) -> Option<u32> {
+    let h = s.trim().trim_start_matches('#');
+    let h = if h.len() == 3 { h.chars().flat_map(|c| [c, c]).collect::<String>() } else { h.to_string() };
+    if h.len() != 6 {
+        return None;
+    }
+    u32::from_str_radix(&h, 16).ok()
+}
+
+/// a + (b - a) * t, per channel
+fn mix(a: u32, b: u32, t: f32) -> u32 {
+    let ch = |c: u32, sh: u32| ((c >> sh) & 0xff) as f32;
+    let m = |sh: u32| ((ch(a, sh) + (ch(b, sh) - ch(a, sh)) * t).round().clamp(0.0, 255.0) as u32) << sh;
+    m(16) | m(8) | m(0)
+}
+
+fn luminance(c: u32) -> f32 {
+    let ch = |sh: u32| ((c >> sh) & 0xff) as f32 / 255.0;
+    0.299 * ch(16) + 0.587 * ch(8) + 0.114 * ch(0)
+}
+
+fn custom_palette(c: &CustomTheme) -> Palette {
+    let d = CustomTheme::default();
+    let bg = parse_hex(&c.bg).or_else(|| parse_hex(&d.bg)).unwrap_or(0x1e1f22);
+    let fg = parse_hex(&c.fg).or_else(|| parse_hex(&d.fg)).unwrap_or(0xd6d6d6);
+    let accent = parse_hex(&c.accent).or_else(|| parse_hex(&d.accent)).unwrap_or(0xe0a040);
+    let dark = luminance(bg) < 0.5;
+    // Text on the accent colour: whichever of bg and fg stands out more.
+    let on_accent = if (luminance(accent) - luminance(bg)).abs() > (luminance(accent) - luminance(fg)).abs() { bg } else { fg };
+    Palette {
+        name: "custom",
+        dark,
+        bg,
+        panel: mix(bg, fg, 0.06),
+        line: mix(bg, fg, 0.18),
+        fg,
+        dim: mix(fg, bg, 0.4),
+        faint: mix(fg, bg, 0.7),
+        accent,
+        red: if dark { 0xff6b6b } else { 0xb00020 },
+        hover: mix(bg, fg, 0.11),
+        on_accent,
+        other: if dark { 0x6cb6ff } else { 0x1f5fa8 },
+    }
+}
+
+fn palette(s: &Settings) -> Palette {
+    if s.theme == "custom" {
+        return custom_palette(&s.custom_theme);
+    }
+    *THEMES.iter().find(|p| p.name == s.theme).unwrap_or(&THEMES[0])
 }
 
 fn rgb(c: u32) -> Color {
@@ -317,7 +397,7 @@ type AppRc = Rc<RefCell<App>>;
 
 impl App {
     fn dark(&self) -> bool {
-        palette(&self.settings.theme).dark
+        palette(&self.settings).dark
     }
     fn send(&self, c: Command) {
         if let Some(e) = &self.engine {
@@ -499,7 +579,7 @@ struct Header {
 
 fn header_for(app: &App, key: &str) -> Header {
     let dark = app.dark();
-    let acc = rgb(palette(&app.settings.theme).accent);
+    let acc = rgb(palette(&app.settings).accent);
     let empty = |name: &str, status: &str, device: &str, info: &str| Header {
         name: name.into(),
         fp: String::new(),
@@ -893,7 +973,30 @@ fn move_window(w: &slint::Window, dx: f32, dy: f32) {
     w.set_position(slint::PhysicalPosition::new(p.x + (dx * s) as i32, p.y + (dy * s) as i32));
 }
 
+/// The user opens a chat: in the bar if they chose so, else in its own window.
 fn open_chat(app: &AppRc, key: &str) {
+    if app.borrow().settings.chats_in_bar && app.borrow().engine.is_some() {
+        dock_chat(app, key);
+    } else {
+        open_chat_window(app, key);
+    }
+}
+
+/// A message opens its chat by itself: in the bar only if no other chat is
+/// there (it would take the place of what the user is typing in).
+fn pop_chat(app: &AppRc, key: &str) {
+    let in_bar = {
+        let a = app.borrow();
+        a.settings.chats_in_bar && !a.hidden && a.docked_chat.as_deref().is_none_or(|d| d == key)
+    };
+    if in_bar {
+        dock_chat(app, key);
+    } else {
+        open_chat_window(app, key);
+    }
+}
+
+fn open_chat_window(app: &AppRc, key: &str) {
     if app.borrow().engine.is_none() {
         return;
     }
@@ -904,7 +1007,7 @@ fn open_chat(app: &AppRc, key: &str) {
     let exists = app.borrow().chats.contains_key(key);
     if !exists {
         let w = ChatWindow::new().expect("chat window");
-        apply_theme(&w.global::<Theme>(), palette(&app.borrow().settings.theme));
+        apply_theme(&w.global::<Theme>(), &palette(&app.borrow().settings));
         w.set_mode(mode_of(key).into());
         w.set_can_task(app.borrow().host.is_running("todo"));
         let (ap, k) = (app.clone(), key.to_string());
@@ -1043,7 +1146,7 @@ fn rebuild_contacts(app: &AppRc) {
     let a = app.borrow();
     let Some(m) = a.main.upgrade() else { return };
     let dark = a.dark();
-    let acc = rgb(palette(&a.settings.theme).accent);
+    let acc = rgb(palette(&a.settings).accent);
     let collapsed = |name: &str| a.settings.collapsed_folders.iter().any(|f| f == name);
     let row = |c: &ContactView| ContactRow {
         kind: "contact".into(),
@@ -1567,7 +1670,7 @@ fn handle_event(app: &AppRc, ev: Event) {
                 }
                 // Minimized to the tray: the chat comes up by itself.
                 if hidden && !open {
-                    open_chat(app, &key);
+                    open_chat_window(app, &key);
                 }
             }
         }
@@ -1674,6 +1777,8 @@ fn handle_event(app: &AppRc, ev: Event) {
         Event::PluginState { plugin, state } => {
             if plugin == LAYOUT {
                 apply_layout(app, &state);
+            } else if plugin == THEME_SYNC {
+                apply_theme_sync(app, &state);
             } else if let Ok(v) = serde_json::from_str(&state) {
                 app.borrow().host.send(&plugin, &ToPlugin::State { state: v });
             }
@@ -1817,7 +1922,7 @@ fn net_os(label: &str) -> String {
 }
 
 fn level_color(a: &App, level: &str) -> Color {
-    if level == "D" { rgb(palette(&a.settings.theme).red) } else { tint(Status::Away, a.dark()) }
+    if level == "D" { rgb(palette(&a.settings).red) } else { tint(Status::Away, a.dark()) }
 }
 
 fn level_text(level: &str) -> &'static str {
@@ -1967,7 +2072,7 @@ fn alert_incoming(app: &AppRc, key: &str, title: &str, urgent: bool) {
             desktop::notify(title, "New message");
         }
         if popups && !open {
-            open_chat(app, key);
+            pop_chat(app, key);
         }
     }
 }
@@ -2092,7 +2197,7 @@ fn poll_bots(app: &AppRc) {
             refresh_chat(app, &key);
         } else {
             play(app, desktop::Sound::Message);
-            open_chat(app, &key);
+            pop_chat(app, &key);
         }
     }
 }
@@ -2191,6 +2296,63 @@ struct Layout {
 
 fn now_secs() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
+}
+
+/// Pseudo plugin id for the theme synced between own devices.
+const THEME_SYNC: &str = "_theme";
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct ThemeSync {
+    theme: String,
+    custom: CustomTheme,
+    updated: i64,
+}
+
+/// Puts the current theme on every window and into the settings panel.
+fn show_theme(app: &AppRc) {
+    {
+        let a = app.borrow();
+        let p = palette(&a.settings);
+        for w in a.chats.values() {
+            apply_theme(&w.global::<Theme>(), &p);
+        }
+        if let Some(m) = a.main.upgrade() {
+            apply_theme(&m.global::<Theme>(), &p);
+            m.set_theme_name(a.settings.theme.clone().into());
+            m.set_custom_bg(a.settings.custom_theme.bg.clone().into());
+            m.set_custom_fg(a.settings.custom_theme.fg.clone().into());
+            m.set_custom_accent(a.settings.custom_theme.accent.clone().into());
+        }
+    }
+    let s = app.borrow().my_status;
+    set_my_status(app, s);
+    rebuild_contacts(app);
+    refresh_all_chats(app);
+}
+
+/// The theme changed here: tell our other devices.
+fn send_theme(app: &AppRc) {
+    let a = app.borrow();
+    let t = ThemeSync { theme: a.settings.theme.clone(), custom: a.settings.custom_theme.clone(), updated: a.settings.theme_updated };
+    if let Ok(state) = serde_json::to_string(&t) {
+        a.send(Command::SyncPluginState { plugin: THEME_SYNC.into(), state });
+    }
+}
+
+/// Another device changed the theme: follow it if it is newer.
+fn apply_theme_sync(app: &AppRc, state: &str) {
+    let Ok(t) = serde_json::from_str::<ThemeSync>(state) else { return };
+    {
+        let mut a = app.borrow_mut();
+        if t.updated <= a.settings.theme_updated {
+            return;
+        }
+        a.settings.theme = t.theme;
+        a.settings.custom_theme = t.custom;
+        a.settings.theme_updated = t.updated;
+        save_settings(&a.dir, &a.settings);
+    }
+    show_theme(app);
 }
 
 /// The layout changed here: save and tell our other devices.
@@ -2328,11 +2490,15 @@ fn main() {
     let settings = load_settings(&dir);
 
     let main = MainWindow::new().expect("main window");
-    apply_theme(&main.global::<Theme>(), palette(&settings.theme));
+    apply_theme(&main.global::<Theme>(), &palette(&settings));
     main.set_theme_name(settings.theme.clone().into());
     main.set_app_version(env!("CARGO_PKG_VERSION").into());
-    let names: Vec<SharedString> = THEMES.iter().map(|p| p.name.into()).collect();
-    main.set_theme_names(ModelRc::new(VecModel::from(names)));
+    let names: Vec<&str> = THEMES.iter().map(|p| p.name).chain(["custom"]).collect();
+    let rows: Vec<ThemeRow> = names.chunks(3).map(|c| ThemeRow { names: ModelRc::new(VecModel::from(c.iter().map(|n| SharedString::from(*n)).collect::<Vec<_>>())) }).collect();
+    main.set_theme_rows(ModelRc::new(VecModel::from(rows)));
+    main.set_custom_bg(settings.custom_theme.bg.clone().into());
+    main.set_custom_fg(settings.custom_theme.fg.clone().into());
+    main.set_custom_accent(settings.custom_theme.accent.clone().into());
     main.set_split(settings.split);
     main.set_docked(true);
     main.set_profile(profile.clone().into());
@@ -2346,6 +2512,7 @@ fn main() {
     main.set_s_hk_dnd(hk[4].clone());
     main.set_s_start_min(settings.start_min);
     main.set_s_update_check(settings.update_check);
+    main.set_s_chats_in_bar(settings.chats_in_bar);
     main.set_s_update_auto(settings.update_auto);
     main.set_update_status(format!("this is v{}", env!("CARGO_PKG_VERSION")).into());
     main.set_s_notify_online(settings.notify_online);
@@ -2987,23 +3154,34 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
     });
     let ap = app.clone();
     main.on_set_theme(move |name| {
-        let next = palette(&name);
         {
             let mut a = ap.borrow_mut();
-            a.settings.theme = next.name.to_string();
+            a.settings.theme = if name == "custom" || THEMES.iter().any(|p| p.name == name.as_str()) { name.to_string() } else { THEMES[0].name.to_string() };
+            a.settings.theme_updated = now_secs();
             save_settings(&a.dir, &a.settings);
-            for w in a.chats.values() {
-                apply_theme(&w.global::<Theme>(), next);
-            }
-            if let Some(m) = a.main.upgrade() {
-                apply_theme(&m.global::<Theme>(), next);
-                m.set_theme_name(next.name.into());
-            }
         }
-        let s = ap.borrow().my_status;
-        set_my_status(&ap, s);
-        rebuild_contacts(&ap);
-        refresh_all_chats(&ap);
+        show_theme(&ap);
+        send_theme(&ap);
+    });
+    let ap = app.clone();
+    main.on_custom_theme(move |bg, fg, accent| {
+        let Some(m) = ap.borrow().main.upgrade() else { return };
+        let bad: Vec<&str> = [("background", &bg), ("text", &fg), ("accent", &accent)].into_iter().filter(|(_, v)| parse_hex(v).is_none()).map(|(n, _)| n).collect();
+        if !bad.is_empty() {
+            m.set_custom_error(format!("not a colour: {} (write it like #1e1f22)", bad.join(", ")).into());
+            return;
+        }
+        m.set_custom_error("".into());
+        {
+            let mut a = ap.borrow_mut();
+            let norm = |v: &str| format!("#{:06x}", parse_hex(v).unwrap_or(0));
+            a.settings.custom_theme = CustomTheme { bg: norm(&bg), fg: norm(&fg), accent: norm(&accent) };
+            a.settings.theme = "custom".into();
+            a.settings.theme_updated = now_secs();
+            save_settings(&a.dir, &a.settings);
+        }
+        show_theme(&ap);
+        send_theme(&ap);
     });
     let ap = app.clone();
     main.on_setting_toggled(move |name| {
@@ -3022,6 +3200,7 @@ fn wire_settings(app: &AppRc, main: &MainWindow) {
                 "typing" => a.send(Command::SetSendTyping(m.get_s_typing())),
                 "start-min" => a.settings.start_min = m.get_s_start_min(),
                 "update-check" => a.settings.update_check = m.get_s_update_check(),
+                "chats-in-bar" => a.settings.chats_in_bar = m.get_s_chats_in_bar(),
                 "update-auto" => a.settings.update_auto = m.get_s_update_auto(),
                 "popups" => a.settings.popups = m.get_s_popups(),
                 "autostart" => {
@@ -3426,7 +3605,7 @@ fn wire_docked_chat(app: &AppRc, main: &MainWindow) {
         if let Some(m) = ap.borrow().main.upgrade() {
             m.set_chat_docked(false);
         }
-        open_chat(&ap, &id);
+        open_chat_window(&ap, &id);
     });
     let ap = app.clone();
     main.on_dchat_close(move || {
@@ -4054,7 +4233,7 @@ fn open_viewer(app: &AppRc, pipe: Arc<rim_core::engine::ScreenPipe>) {
         Ok(w) => w,
         Err(e) => return notice(app, &format!("Screen window: {e}")),
     };
-    apply_theme(&w.global::<Theme>(), palette(&app.borrow().settings.theme));
+    apply_theme(&w.global::<Theme>(), &palette(&app.borrow().settings));
     w.set_name(name.into());
     let weak = w.as_weak();
     let shown = move |buf: slint::SharedPixelBuffer<slint::Rgba8Pixel>| {
@@ -4152,7 +4331,7 @@ fn open_picture(app: &AppRc, key: &str, id: u64) {
     };
     let Some(img) = img else { return };
     let Ok(w) = ImageWindow::new() else { return };
-    apply_theme(&w.global::<Theme>(), palette(&app.borrow().settings.theme));
+    apply_theme(&w.global::<Theme>(), &palette(&app.borrow().settings));
     w.set_who(who.into());
     w.set_picture(img);
     let _ = w.show();
@@ -4222,4 +4401,32 @@ fn open_invite(app: &AppRc, code: &str) {
         m.set_panel(1);
     }
     notice(app, "Invite received: check it and send your request.");
+}
+
+#[cfg(test)]
+mod theme_tests {
+    use super::*;
+
+    #[test]
+    fn colours_are_read_like_people_write_them() {
+        assert_eq!(parse_hex("#1e1f22"), Some(0x1e1f22));
+        assert_eq!(parse_hex(" 1E1F22 "), Some(0x1e1f22));
+        assert_eq!(parse_hex("#fa0"), Some(0xffaa00));
+        assert_eq!(parse_hex("red"), None);
+        assert_eq!(parse_hex("#12345"), None);
+    }
+
+    #[test]
+    fn a_custom_theme_derives_the_rest() {
+        let dark = custom_palette(&CustomTheme { bg: "#000000".into(), fg: "#ffffff".into(), accent: "#ffcc00".into() });
+        assert!(dark.dark);
+        assert_eq!(dark.on_accent, 0x000000);
+        assert!(dark.panel > dark.bg && dark.panel < dark.line);
+        let light = custom_palette(&CustomTheme { bg: "#ffffff".into(), fg: "#000000".into(), accent: "#000080".into() });
+        assert!(!light.dark);
+        assert_eq!(light.on_accent, 0xffffff);
+        // Nonsense falls back to the default colours instead of breaking the window.
+        let bad = custom_palette(&CustomTheme { bg: "x".into(), fg: "y".into(), accent: "z".into() });
+        assert_eq!((bad.bg, bad.fg, bad.accent), (0x1e1f22, 0xd6d6d6, 0xe0a040));
+    }
 }

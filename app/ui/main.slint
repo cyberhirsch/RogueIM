@@ -40,6 +40,7 @@ export struct MemberRow { account: string, name: string, admin: bool }
 
 export struct GadgetItem { kind: string, id: string, text: string, hint: string, value: float, checked: bool, image: image }
 export struct GadgetRow { items: [GadgetItem] }
+export struct ThemeRow { names: [string] }
 export struct Gadget { id: string, name: string, collapsed: bool, rows: [GadgetRow] }
 export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool, usage: string, first: bool, last: bool }
 export struct ListRow { kind: string, id: string, name: string }
@@ -137,7 +138,12 @@ export component MainWindow inherits Window {
     in property <bool> dock-left;
     in-out property <string> s-bar-width: "280";
     in property <string> theme-name;
-    in property <[string]> theme-names;
+    in property <[ThemeRow]> theme-rows;
+    in-out property <string> custom-bg;
+    in-out property <string> custom-fg;
+    in-out property <string> custom-accent;
+    in property <string> custom-error;
+    callback custom-theme(string, string, string);
     in-out property <string> away-msg;
     // 0 none, 1 add, 2 invite, 3 settings, 4 search, 5 new group, 6 contact, 7 group
     in-out property <int> panel: 0;
@@ -156,6 +162,7 @@ export component MainWindow inherits Window {
     in-out property <bool> s-autohide;
     in-out property <bool> s-on-top: true;
     in-out property <bool> s-make-room;
+    in-out property <bool> s-chats-in-bar;
     in property <bool> is-mac;
     in-out property <string> s-auto-away: "10";
     in-out property <string> s-auto-na: "30";
@@ -800,16 +807,28 @@ export component MainWindow inherits Window {
                     alignment: start;
                     spacing: 3px;
                     RCaption { text: "theme"; }
-                    HorizontalLayout {
+                    for row in root.theme-rows: HorizontalLayout {
                         spacing: 2px;
                         alignment: start;
-                        for t in root.theme-names: RTab { text: t; active: t == root.theme-name; clicked => { root.set-theme(t); } }
+                        for t in row.names: RTab { text: t; active: t == root.theme-name; clicked => { root.set-theme(t); } }
+                    }
+                    if root.theme-name == "custom": VerticalLayout {
+                        spacing: 2px;
+                        RCaption { text: "background · text · accent (Enter applies)"; }
+                        HorizontalLayout {
+                            spacing: 2px;
+                            RInput { text <=> root.custom-bg; placeholder: "#1e1f22"; accepted => { root.custom-theme(root.custom-bg, root.custom-fg, root.custom-accent); } }
+                            RInput { text <=> root.custom-fg; placeholder: "#d6d6d6"; accepted => { root.custom-theme(root.custom-bg, root.custom-fg, root.custom-accent); } }
+                            RInput { text <=> root.custom-accent; placeholder: "#e0a040"; accepted => { root.custom-theme(root.custom-bg, root.custom-fg, root.custom-accent); } }
+                        }
+                        if root.custom-error != "": Text { text: root.custom-error; color: Theme.red; font-size: Theme.small; wrap: word-wrap; }
                     }
                     RCaption { text: "away message (shown when Away / N/A)"; }
                     RInput { text <=> root.away-msg; placeholder: "e.g. back at 14:00"; }
                     RCheck { text: "auto-reply once per hour while away"; checked <=> root.s-auto-reply; toggled => { root.setting-toggled("auto-reply"); } }
                     RCheck { text: "hide offline contacts"; checked <=> root.s-hide-offline; toggled => { root.setting-toggled("hide-offline"); } }
                     RCheck { text: "open chats on new messages"; checked <=> root.s-popups; toggled => { root.setting-toggled("popups"); } }
+                    RCheck { text: "open chats in the bar, not in their own windows"; checked <=> root.s-chats-in-bar; toggled => { root.setting-toggled("chats-in-bar"); } }
                     RCheck { text: "start with the computer"; checked <=> root.s-autostart; toggled => { root.setting-toggled("autostart"); } }
                     RCheck { text: "start hidden (tray only)"; checked <=> root.s-start-min; toggled => { root.setting-toggled("start-min"); } }
                     RCheck { text: "check for updates (GitHub)"; checked <=> root.s-update-check; toggled => { root.setting-toggled("update-check"); } }
