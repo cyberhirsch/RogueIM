@@ -21,8 +21,10 @@ export component LoginScreen inherits Rectangle {
     callback restore(string, bool, string, string);
     callback recovery-done();
     callback copy-text(string);
+    callback start-over();
 
     property <int> tab: 0;
+    property <bool> ask-reset;
     property <bool> wrote-down;
     property <string> secret;
 
@@ -49,6 +51,24 @@ export component LoginScreen inherits Rectangle {
                 clicked => { root.unlock(upass.text); }
             }
             RCheck { text: "remember on this computer (OS keychain)"; checked <=> root.remember; }
+            if !root.ask-reset: RButton { text: "forgot the passphrase?"; clicked => { root.ask-reset = true; } }
+            if root.ask-reset: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: "Without its passphrase this profile cannot be opened; there is no reset. Set it aside and start fresh: link this computer to your account from a device you use, or restore a backup (the 24 recovery words open it).";
+                    color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+                }
+                Text {
+                    text: "Nothing is deleted: the old profile stays in a folder named " + root.profile + ".old-<date> next to it.";
+                    color: Theme.dim; wrap: word-wrap; font-size: Theme.small;
+                }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    RButton { text: "set this profile aside"; enabled: !root.busy; clicked => { root.ask-reset = false; root.start-over(); } }
+                    RButton { text: "cancel"; clicked => { root.ask-reset = false; } }
+                }
+            }
         }
 
         if root.new-account: VerticalLayout {

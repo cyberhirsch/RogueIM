@@ -2232,6 +2232,20 @@ fn order_gadgets(app: &AppRc) {
     a.gadgets.set_vec(v);
 }
 
+/// Renames a profile that cannot be opened to `<name>.old-<date>` and starts an
+/// empty one in its place, keeping only the window settings (ui.json).
+fn set_profile_aside(dir: &Path) -> std::io::Result<PathBuf> {
+    let stamp = time::OffsetDateTime::now_utc()
+        .format(time::macros::format_description!("[year][month][day]-[hour][minute][second]"))
+        .unwrap_or_default();
+    let name = dir.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| "profile".into());
+    let old = dir.with_file_name(format!("{name}.old-{stamp}"));
+    std::fs::rename(dir, &old)?;
+    std::fs::create_dir_all(dir)?;
+    let _ = std::fs::copy(old.join("ui.json"), dir.join("ui.json"));
+    Ok(old)
+}
+
 fn profile_dir(profile: &str) -> PathBuf {
     directories::ProjectDirs::from("net", "RogueIM", "RogueIM")
         .map(|d| d.data_dir().to_path_buf())
@@ -2577,6 +2591,26 @@ fn wire_login(app: &AppRc, main: &MainWindow) {
         ap.borrow_mut().remember_pass = m.get_remember().then(|| pass.to_string());
         let cfg = base_cfg(&ap, &pass);
         spawn_engine(&ap, cfg);
+    });
+    let ap = app.clone();
+    main.on_start_over(move || {
+        let Some(m) = ap.borrow().main.upgrade() else { return };
+        if ap.borrow().engine.is_some() {
+            return;
+        }
+        let (dir, profile) = {
+            let a = ap.borrow();
+            (a.dir.clone(), a.profile.clone())
+        };
+        match set_profile_aside(&dir) {
+            Ok(old) => {
+                desktop::forget(&profile);
+                m.set_remember(false);
+                m.set_new_account(true);
+                m.set_login_error(format!("The old profile is now in {}", old.display()).into());
+            }
+            Err(e) => m.set_login_error(format!("Could not set the profile aside: {e}").into()),
+        }
     });
     let ap = app.clone();
     main.on_start_link(move |pass| {

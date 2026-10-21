@@ -273,6 +273,7 @@ export component MainWindow inherits Window {
     // ---------------------------------------------------------------- callbacks
     callback create(string, string, string);
     callback unlock(string);
+    callback start-over();
     callback start-link(string);
     callback browse-backup();
     callback restore(string, bool, string, string);
@@ -410,6 +411,7 @@ export component MainWindow inherits Window {
         restore(a, b, c, d) => { root.restore(a, b, c, d); }
         recovery-done => { root.recovery-done(); }
         copy-text(t) => { root.copy-text(t); }
+        start-over => { root.start-over(); }
     }
 
     // ---------------------------------------------------------------- main
