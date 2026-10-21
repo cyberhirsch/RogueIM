@@ -29,7 +29,9 @@ curl -fsSL https://raw.githubusercontent.com/cyberhirsch/RogueIM/main/deploy/mac
 account), so the first start is blocked. Open System Settings → Privacy & Security and click "Open Anyway"
 (on macOS 14 and older, right-click the app and choose Open). The player gadget controls players other than
 Music and Spotify through the media keys; that needs RogueIM under Privacy & Security → Accessibility.
-macOS cannot reserve screen space, so maximised windows go under the bar; "auto-hide the bar" helps.
+macOS cannot reserve screen space, so maximised windows go under the bar. Either turn on "auto-hide the bar", or
+"make room: move other windows beside the bar" (settings → general, Mac only): about once a second it moves or
+narrows windows that reach under the bar. That too needs RogueIM under Privacy & Security → Accessibility.
 
 Linux runtime needs GTK 3, libayatana-appindicator3, libxdo and ALSA (usually preinstalled on desktops).
 
@@ -37,7 +39,8 @@ Linux runtime needs GTK 3, libayatana-appindicator3, libxdo and ALSA (usually pr
 
 From v0.1.4 on, RIM checks GitHub for new releases (settings → general; can be switched off). It installs
 only releases whose files match a checksum list signed with the RogueIM release key, then restarts itself.
-Automatic installation is off by default: you get a notice with an "install" button. Inside a
+Automatic installation is on by default (from v0.1.10; earlier profiles are switched over once); untick "install
+updates automatically" to get a notice with an "install" button instead. Inside a
 system folder like Program Files, RIM cannot replace itself; unpack it somewhere you own.
 
 ## Run from source
@@ -55,7 +58,9 @@ First start offers three tabs:
   paste the code on a device you already use (settings → devices → link) and compare the words.
 - **restore**: a new device from a `.rimb` backup file, using the passphrase or the recovery words.
 
-There is no password reset: the state file is encrypted with the passphrase.
+There is no password reset: the state file is encrypted with the passphrase. If you forgot it, **forgot the
+passphrase?** under unlock sets the profile aside (renamed to `default.old-<date>`, nothing is deleted) and offers the
+three tabs again: link this computer from a device you use, or restore a backup with the recovery words.
 
 To add someone: **invite** → **copy** → send them the `rim2:…` code; they paste it under **+ add**.
 You accept their authorization request, then you both see each other's status.
@@ -84,7 +89,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 
 ## Known limitations of the alpha
 
-- Tested by hand on Windows 10 only. Linux and macOS builds compile in CI, but docking, idle detection
+- Tested by hand mostly on Windows 10, macOS only briefly. Linux builds compile in CI, but docking, idle detection
   and the player plugin have not been exercised there. Wayland docking works through XWayland only.
 - Hole punching fails behind "symmetric" NAT (common on mobile networks and some CGNAT lines). Then chat and
   presence still work over Nostr, but files need a direct path: UPnP, a port forward, or your own node
@@ -100,7 +105,6 @@ Invites are single-use by default, expire, and carry a small proof of work.
 - The phone app is tested in the Android emulator with Google Messages (SMS in, reply out), not yet on a real phone.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
-- No installers yet: archives only.
 
 ## Mail
 
