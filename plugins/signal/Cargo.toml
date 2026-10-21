@@ -12,8 +12,6 @@ license = "AGPL-3.0-only"
 [dependencies]
 presage = { git = "https://github.com/whisperfish/presage", rev = "6f630791b2c7bf3d5b00c75f5a6c94131bf79c8c" }
 presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "6f630791b2c7bf3d5b00c75f5a6c94131bf79c8c", default-features = false }
-# SQLCipher with pure-Rust crypto (no OpenSSL): the store is encrypted with the plugin key.
-libsqlite3-sys = { version = "0.36.0", features = ["bundled-sqlcipher-custom-crypto"] }
 rim-plugin-sdk = { path = "../../crates/rim-plugin-sdk" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,6 +22,15 @@ sha2 = "0.11.0"
 sqlx = { version = "0.9.0", default-features = false, features = ["sqlite"] }
 url = "2.5"
 uuid = "1"
+
+# SQLCipher: the Signal store is encrypted with the plugin key. Rust crypto (no
+# OpenSSL) everywhere except ARM Linux, where that code does not build (C's char
+# is unsigned there) and the system's OpenSSL is used instead.
+[target.'cfg(not(all(target_os = "linux", target_arch = "aarch64")))'.dependencies]
+libsqlite3-sys = { version = "0.36.0", features = ["bundled-sqlcipher-custom-crypto"] }
+
+[target.'cfg(all(target_os = "linux", target_arch = "aarch64"))'.dependencies]
+libsqlite3-sys = { version = "0.36.0", features = ["bundled-sqlcipher"] }
 
 [patch.crates-io]
 libsqlite3-sys = { git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
