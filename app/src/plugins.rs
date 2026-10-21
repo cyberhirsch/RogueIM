@@ -29,6 +29,8 @@ pub fn first_party() -> Vec<Manifest> {
         m("player", "Player", "Controls the active media player; can share what you listen to.", &["presence.now_playing"]),
         m("mail", "Mail", "Your email in the buddy list: people you write to become contacts, their mails one chat. Not end-to-end encrypted.", &["chats", "network:imap", "network:smtp"]),
         m("whatsapp", "WhatsApp", "Your WhatsApp chats in the buddy list, linked like WhatsApp Web. Unofficial: WhatsApp may block the number; asks before it connects.", &["chats", "network:whatsapp"]),
+        m("telegram", "Telegram", "Your Telegram chats in the buddy list, through Telegram's own client API with your own API key. Not end-to-end encrypted.", &["chats", "network:telegram"]),
+        m("signal", "Signal", "Your Signal chats in the buddy list, as a linked device like Signal Desktop. Unofficial library (presage); end to end encrypted.", &["chats", "network:signal"]),
         m("phone", "Phone", "Messages from your Android phone (WhatsApp, Signal, SMS …) through its notifications, with the RogueIM Phone app. Local network only.", &["chats", "network:lan"]),
     ]
 }

@@ -1,0 +1,39 @@
+# Its own workspace: libsignal needs its own versions and patches, which
+# should not reach the rest of RogueIM.
+[workspace]
+
+[package]
+name = "rim-plugin-signal"
+version = "0.1.9"
+edition = "2021"
+# presage and libsignal are AGPL-3.0; so is this plugin (RogueIM itself: GPL-3.0-or-later).
+license = "AGPL-3.0-only"
+
+[dependencies]
+presage = { git = "https://github.com/whisperfish/presage", rev = "6f630791b2c7bf3d5b00c75f5a6c94131bf79c8c" }
+presage-store-sqlite = { git = "https://github.com/whisperfish/presage", rev = "6f630791b2c7bf3d5b00c75f5a6c94131bf79c8c", default-features = false }
+libsqlite3-sys = { version = "0.36.0", features = ["bundled"] }
+rim-plugin-sdk = { path = "../../crates/rim-plugin-sdk" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1.48", features = ["rt", "macros", "sync", "time", "io-util"] }
+futures = "0.3"
+hex = "0.4.3"
+sha2 = "0.11.0"
+sqlx = { version = "0.9.0", default-features = false, features = ["sqlite"] }
+url = "2.5"
+uuid = "1"
+
+[patch.crates-io]
+libsqlite3-sys = { git = "https://github.com/whisperfish/rusqlite", rev = "2a42b3354c9194700d08aa070f70a131a470e7dc" }
+
+[profile.release]
+opt-level = 3
+lto = "thin"
+strip = true
+
+[profile.dev.package."*"]
+opt-level = 2
+
+[dev-dependencies]
+interprocess = "2"

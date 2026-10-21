@@ -79,7 +79,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Without a direct path | Messages over a live Nostr subscription (about a second), presence over short-lived Nostr signals |
 | Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar), drag & drop files onto chats, tray with your own OS icon, notifications, per-event sounds, rebindable global hotkeys, autostart (optionally hidden), Away on screen lock, idle lock, optional passphrase in the OS keychain |
 | Themes | graphite (default), grey, green, amber; bundled Hack monospace font |
-| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail, WhatsApp and your Android phone's messages (see below) |
+| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail, WhatsApp, Telegram, Signal and your Android phone's messages (see below) |
 | Headless | `rim-cli` as node (relay/DHT/mailbox helper), bot with a local JSON API, one-shot sender |
 
 ## Known limitations of the alpha
@@ -94,6 +94,9 @@ Invites are single-use by default, expire, and carry a small proof of work.
 - Only the first-party plugins are loaded. Third-party plugins and plugin signing come later.
 - The mail plugin has been tested against a local test server (GreenMail) only, not yet against real mail providers.
 - The WhatsApp plugin is tested up to the QR code; linking a real account has not been tested yet.
+- The Telegram plugin is tested up to Telegram turning down a made-up API key; logging in with a real account has not
+  been tested yet.
+- The Signal plugin is tested up to Signal handing out the link code; linking a real phone has not been tested yet.
 - The phone app is tested in the Android emulator with Google Messages (SMS in, reply out), not yet on a real phone.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
@@ -127,6 +130,36 @@ Settings → plugins → **WhatsApp**: your WhatsApp chats in the buddy list, in
   text, pictures (Ctrl+V or **+**) and files. Opening a chat marks it read on WhatsApp too.
 - Level C: WhatsApp encrypts end to end, this computer decrypts. WhatsApp's servers see who you write to and when.
   The link, keys and a copy of your messages stay in the plugin's folder in your RogueIM profile.
+
+## Telegram
+
+Settings → plugins → **Telegram**: your Telegram chats in the buddy list, through Telegram's own client API
+([gotd](https://github.com/gotd/td)). Telegram allows other programs, with a key of their own.
+
+- Get the key once: log in at [my.telegram.org](https://my.telegram.org) → API development tools, create an app (any
+  name), and enter its `api_id` and `api_hash` in the plugin. The key stays in the plugin's folder.
+- Then scan the QR code in the sidebar: Telegram → Settings → Devices → Link Desktop Device. With two-step
+  verification, the plugin asks for your cloud password. "sign out" ends the session on Telegram too.
+- Chats from the last 60 days appear in a **telegram** folder: people, bots, groups, Saved Messages; channels are left
+  out. Telegram keeps the history, so the plugin stores no messages; pictures you open are kept in its folder.
+  Pictures, files, voice messages and locations work as with WhatsApp. Opening a chat marks it read on Telegram.
+- Level D: Telegram's chats are not end-to-end encrypted; Telegram's servers can read them. Secret chats exist only
+  in Telegram's phone apps and do not appear.
+
+## Signal
+
+Settings → plugins → **Signal**: your Signal chats in the buddy list. RogueIM becomes a linked device of your
+Signal account, like Signal Desktop, through the unofficial library [presage](https://github.com/whisperfish/presage).
+
+- Click **link** and scan the code: Signal → Settings → Linked devices → Link new device. "unlink" removes RogueIM
+  from your account again.
+- Signal does not hand older messages to a new device: chats fill from the moment of linking. Contacts come from your
+  phone; add a chat under **+ add** by a name or number from them (groups by name).
+- Text, pictures, files, voice messages and stickers; pictures (Ctrl+V or **+**) and files can be sent. Opening a chat
+  marks it read on your other devices; no read receipts go to the sender.
+- Level C: Signal encrypts end to end, this computer decrypts. Keys, contacts and messages stay in the plugin's
+  folder. Signal does not support presage but tolerates such clients.
+- The plugin is AGPL-3.0, like the libraries it uses; the rest of RogueIM is GPL-3.0-or-later.
 
 ## Phone (Android)
 
@@ -194,7 +227,7 @@ crates/rim-core         engine: identity, Olm/Megolm, libp2p swarm, Nostr mailbo
 crates/rim-cli          headless peer: node, bot, scripting
 crates/rim-plugin-sdk   plugin protocol (JSON lines over a local socket)
 app/                    Slint desktop app (ui/*.slint, src/dock.rs = docking)
-plugins/                pomodoro, todo, player, mail, phone, whatsapp (Go)
+plugins/                pomodoro, todo, player, mail, phone, whatsapp and telegram (Go), signal (own workspace)
 android/                RogueIM Phone, the Android app for the phone plugin
 deploy/                 Dockerfile, systemd unit, .deb scripts
 docs/                   PRD, tech stack, protocol spec

@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = ["crates/rim-core", "crates/rim-cli", "crates/rim-plugin-sdk", "app", "plugins/pomodoro", "plugins/todo", "plugins/player", "plugins/mail", "plugins/phone", "bots/llm"]
+exclude = ["plugins/signal"]
 
 [workspace.package]
 version = "0.1.9"

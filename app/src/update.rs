@@ -243,7 +243,7 @@ fn install(r: &Release, report: &dyn Fn(Progress)) -> Result<(), String> {
     report(Progress::Step("installing…".into()));
     let files = unpack(&r.archive_name, &archive)?;
     let (dir, bundle) = install_dir()?;
-    let bins = ["rogueim", "rim-cli", "rim-plugin-pomodoro", "rim-plugin-todo", "rim-plugin-player", "rim-plugin-mail", "rim-plugin-phone", "rim-plugin-whatsapp"];
+    let bins = ["rogueim", "rim-cli", "rim-plugin-pomodoro", "rim-plugin-todo", "rim-plugin-player", "rim-plugin-mail", "rim-plugin-phone", "rim-plugin-whatsapp", "rim-plugin-telegram", "rim-plugin-signal"];
     let is_bin = |p: &str| bins.iter().any(|b| p == *b || p == format!("{b}.exe"));
     if !files.iter().any(|(p, _)| p == "rogueim" || p == "rogueim.exe") {
         return Err("the archive holds no RogueIM program".into());
