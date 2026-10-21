@@ -50,7 +50,7 @@ Optional plugins bring email and other messengers into the same list, always mar
 
 ## 4. Non-goals
 
-- Full-featured mobile apps. RIM is desktop first. A lightweight **mobile companion** (chat + presence) is planned later so contacts can be reachable from their phone.
+- Full-featured mobile apps. RIM is desktop first. A **mobile companion** on Android grows in stages from the RogueIM Phone helper to a full device of the same account ([ANDROID_ROADMAP.md](ANDROID_ROADMAP.md)); iOS is not planned.
 - Video calls and group calls. (1:1 voice calls with view-only screen sharing exist.)
 - Anonymity against a global network observer (Tor transport is a later option).
 - Public chat rooms / large communities (>100 members).
@@ -370,7 +370,8 @@ No telemetry, so measured via:
 | **M2 — Beta** | P1: multi-device + remote logout, scheduled backups, introductions, note to self, urgent flag, hotkeys, DHT mailbox + buddy relays, docking on Wayland/macOS, headless node + Docker/Pi package, bot mode, plugin host + first-party plugins (pomodoro, todo.txt/CalDAV, player), diagnostics, themes, sounds, fuzzing + external audit |
 | **M3 — 1.0** | Groups, audit fixes, signed releases on 3 OSes, protocol spec 1.0, docs |
 | **M4 — Hub** | Network plugin API (HB-1, HB-8), email (HB-2), transport honesty (TH-1..6), send to anyone (HB-3), Telegram (HB-4), then Signal (HB-6) and WhatsApp with warning (HB-5) |
-| **Later** | Mobile companion (another device on the same account), Tor, MLS groups |
+| **M5 — Android** | From the RogueIM Phone helper (stage 1, done) to a full device on the same account, in seven stages: [ANDROID_ROADMAP.md](ANDROID_ROADMAP.md) |
+| **Later** | Tor, MLS groups |
 
 ---
 

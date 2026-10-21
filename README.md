@@ -178,6 +178,8 @@ protocol, so no account can be blocked for it, and it works for WhatsApp, Signal
 - Limits: only what arrives as a notification (no history, no pictures), and only while the phone is on and in the
   same network. If you dismissed the notification on the phone, answer there.
 - Windows asks once whether `rim-plugin-phone` may receive connections: allow it for private networks.
+- RogueIM Phone is a helper, not RogueIM itself. The way to a full RogueIM on Android is in
+  [docs/ANDROID_ROADMAP.md](docs/ANDROID_ROADMAP.md).
 
 ## Run a node
 
