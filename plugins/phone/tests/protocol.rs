@@ -62,7 +62,7 @@ fn a_phone_links_and_chats() {
     let mut say = |s: &mut TcpStream, v: serde_json::Value| s.write_all(&up.seal(v.to_string().as_bytes())).unwrap();
     say(&mut s, serde_json::json!({"t": "hello", "device": "Pixel 9"}));
     wait("the phone's name", &mut |m| matches!(m, ToHost::View { items } if items.iter().any(|i| i.text == "Pixel 9")));
-    say(&mut s, serde_json::json!({"t": "msg", "chat": "com.whatsapp|Anna", "app": "WhatsApp", "conv": "Anna", "who": "Anna", "text": "Lunch?", "ts": 1_790_000_000_000i64, "id": "m1"}));
+    say(&mut s, serde_json::json!({"t": "msg", "chat": "com.whatsapp|Anna", "app": "WhatsApp", "conv": "Anna", "who": "Anna", "text": "Lunch?", "ts": std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as i64, "id": "m1"}));
     let ToHost::Incoming { chat, name } = wait("incoming", &mut |m| matches!(m, ToHost::Incoming { .. })) else { unreachable!() };
     assert_eq!((chat.as_str(), name.as_str()), ("com.whatsapp|Anna", "Anna (WhatsApp)"));
 
