@@ -13,22 +13,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Microsoft/go-winio"
 	"go.mau.fi/whatsmeow/proto/waE2E"
 	"google.golang.org/protobuf/proto"
 )
 
 func listen(t *testing.T, name string) net.Listener {
-	var l net.Listener
-	var err error
-	switch runtime.GOOS {
-	case "windows":
-		l, err = winio.ListenPipe(`\\.\pipe\`+name, nil)
-	case "linux":
-		l, err = net.Listen("unix", "@"+name)
-	default:
-		l, err = net.Listen("unix", "/tmp/"+name)
-	}
+	l, err := listenHost(name)
 	if err != nil {
 		t.Fatal(err)
 	}

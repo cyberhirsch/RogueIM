@@ -15,3 +15,11 @@ func dialHost(name string) (net.Conn, error) {
 	}
 	return net.Dial("unix", "/tmp/"+name)
 }
+
+// listenHost is the RogueIM side, for the tests.
+func listenHost(name string) (net.Listener, error) {
+	if runtime.GOOS == "linux" {
+		return net.Listen("unix", "@"+name)
+	}
+	return net.Listen("unix", "/tmp/"+name)
+}
