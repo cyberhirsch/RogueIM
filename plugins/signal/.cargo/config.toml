@@ -1,0 +1,5 @@
+# SQLCipher uses Rust crypto (bundled-sqlcipher-custom-crypto), but the rusqlite
+# fork's build script still wants an OpenSSL path on Windows. Nothing links it.
+[env]
+OPENSSL_LIB_DIR = "unused"
+OPENSSL_INCLUDE_DIR = "unused"

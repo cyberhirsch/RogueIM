@@ -85,7 +85,7 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Without a direct path | Messages over a live Nostr subscription (about a second), presence over short-lived Nostr signals |
 | Desktop | Always-on-top bar docked to any screen edge on any monitor (Windows AppBar reserves the strip; X11 struts), auto-hide, frameless chat windows (pin, dock into the bar; or open every chat in the bar: settings → general), drag & drop files onto chats, tray with your own OS icon, notifications, per-event sounds, rebindable global hotkeys, autostart (optionally hidden), Away on screen lock, idle lock, optional passphrase in the OS keychain |
 | Themes | graphite (default), grey, green, amber, phosphor, solar, dos, paper, or custom from three colours (background, text, accent); the theme follows you to your other devices; bundled Hack monospace font |
-| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail, WhatsApp, Telegram, Signal and your Android phone's messages (see below) |
+| Plugins | Separate processes, loaded only when enabled: pomodoro, todo (todo.txt or CalDAV), player controls (Windows SMTC, Linux MPRIS, macOS Music/Spotify) with optional "now playing" status, mail, WhatsApp, Telegram, Signal and your Android phone's messages (see below). Their data (contacts, chats, logins, received pictures and files) is encrypted on disk with a key from your unlocked profile: each plugin gets its own key, Signal's database is SQLCipher, WhatsApp's database lives in memory and only its encrypted copy is written |
 | Headless | `rim-cli` as node (relay/DHT/mailbox helper), bot with a local JSON API, one-shot sender |
 
 ## Known limitations of the alpha
@@ -105,6 +105,9 @@ Invites are single-use by default, expire, and carry a small proof of work.
 - The Signal plugin is tested up to Signal handing out the link code; linking a real phone has not been tested yet.
 - The phone app is tested in the Android emulator with Google Messages (SMS in, reply out), not yet on a real phone.
 - Changing helper/relay mode takes effect after a restart.
+- Plugin data is encrypted, with two exceptions: a todo.txt file stays plain (it is meant for other todo.txt apps),
+  and "open" on a received file hands the viewer a decrypted copy in a temp folder, which is emptied when the plugin
+  stops. WhatsApp writes its encrypted database every few seconds, so a crash can lose the last seconds of its state.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
 
 ## Send to someone

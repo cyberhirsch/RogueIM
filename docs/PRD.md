@@ -306,6 +306,7 @@ carry a network badge, chats show the network's level (TH-1) under the header, a
 - SEC-1 All RIM payloads E2EE; no fallback to plaintext. Plugins for other networks (§7.13) are outside this guarantee and always marked (TH-1..6).
 - SEC-2 Forward secrecy and post-compromise security for 1:1.
 - SEC-3 History DB encrypted at rest (SQLCipher, Argon2id key).
+- SEC-3a Plugin data at rest (other networks' contacts, chats, sessions, media) sealed with a per-plugin key derived from a random key inside the encrypted state file; plugin databases encrypted (SQLCipher) or kept in memory with a sealed copy on disk.
 - SEC-4 Keys zeroized in memory after use; never logged.
 - SEC-5 All parsers fuzzed; no panic on malformed input.
 - SEC-6 Unsolicited contact requests require a valid invite token (CT-10) or an introduction (CT-9), plus proof-of-work and rate limits.

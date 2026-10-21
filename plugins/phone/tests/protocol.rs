@@ -18,7 +18,12 @@ fn a_phone_links_and_chats() {
     let data = std::env::temp_dir().join(format!("rim-phone-test-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&data);
     let listener = ListenerOptions::new().name(sock.clone().to_ns_name::<GenericNamespaced>().unwrap()).create_sync().unwrap();
-    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rim-plugin-phone")).env("RIM_PLUGIN_SOCKET", &sock).env("RIM_PLUGIN_DATA", &data).spawn().unwrap();
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rim-plugin-phone"))
+        .env("RIM_PLUGIN_SOCKET", &sock)
+        .env("RIM_PLUGIN_DATA", &data)
+        .env(rim_plugin_sdk::sealed::KEY_ENV, "33".repeat(32))
+        .spawn()
+        .unwrap();
     let conn = listener.incoming().next().unwrap().unwrap();
     let (recv, mut send) = conn.split();
     let (tx, rx) = std::sync::mpsc::channel();
@@ -92,6 +97,14 @@ fn a_phone_links_and_chats() {
 
     tell(ToPlugin::Stop);
     let _ = child.wait();
+
+    // On disk the chats are sealed with the plugin's key: no message text in clear.
+    let path = data.join("phone-chats.json");
+    let disk = std::fs::read(&path).unwrap();
+    assert!(rim_plugin_sdk::sealed::is_sealed(&disk));
+    assert!(!disk.windows(6).any(|w| w == b"Lunch?"));
+    let plain = rim_plugin_sdk::sealed::open_from(&[0x33; 32], &path, &disk).unwrap();
+    assert!(String::from_utf8(plain).unwrap().contains("Lunch?"));
     let _ = std::fs::remove_dir_all(&data);
 }
 

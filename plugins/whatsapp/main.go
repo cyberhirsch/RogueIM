@@ -6,7 +6,6 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"mime"
@@ -49,7 +48,7 @@ type Plugin struct {
 	host     *Host
 	dir      string
 	cfg      config
-	db       *sql.DB
+	db       *memDB
 	st       *Store
 	devices  *sqlstore.Container
 	cli      *whatsmeow.Client
@@ -72,8 +71,9 @@ func main() {
 		dir = "."
 	}
 	_ = os.MkdirAll(filepath.Join(dir, "media"), 0o700)
+	clearOpenCopies()
 	p := &Plugin{host: host, dir: dir, open: map[string]bool{}, groups: map[string]string{}}
-	if b, err := os.ReadFile(filepath.Join(dir, "whatsapp.json")); err == nil {
+	if b, err := readSealed(filepath.Join(dir, "whatsapp.json")); err == nil {
 		_ = json.Unmarshal(b, &p.cfg)
 	}
 	host.Send(map[string]any{"t": "channel", "label": "whatsapp", "level": "C", "warning": warning, "files": true})
@@ -89,6 +89,10 @@ func main() {
 				p.cli.Disconnect()
 			}
 			p.mu.Unlock()
+			if p.db != nil {
+				_ = p.db.Close()
+			}
+			clearOpenCopies()
 			return
 		case "click":
 			p.click(m.ID)
@@ -122,7 +126,7 @@ func main() {
 
 func (p *Plugin) saveConfig() {
 	b, _ := json.Marshal(p.cfg)
-	_ = os.WriteFile(filepath.Join(p.dir, "whatsapp.json"), b, 0o600)
+	_ = writeSealed(filepath.Join(p.dir, "whatsapp.json"), b)
 }
 
 func (p *Plugin) setStatus(s string) {
@@ -174,19 +178,18 @@ func (p *Plugin) click(id string) {
 func (p *Plugin) start() {
 	ctx := context.Background()
 	if p.db == nil {
-		db, err := sql.Open("sqlite", "file:"+filepath.Join(p.dir, "whatsapp.db")+"?_pragma=foreign_keys(1)&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)")
+		db, err := openMemDB(filepath.Join(p.dir, "whatsapp.db"))
 		if err != nil {
 			p.setStatus("database: " + err.Error())
 			return
 		}
-		db.SetMaxOpenConns(1)
 		p.db = db
-		p.devices = sqlstore.NewWithDB(db, "sqlite3", waLog.Noop)
+		p.devices = sqlstore.NewWithDB(db.DB, "sqlite3", waLog.Noop)
 		if err := p.devices.Upgrade(ctx); err != nil {
 			p.setStatus("database: " + err.Error())
 			return
 		}
-		if p.st, err = openStore(db); err != nil {
+		if p.st, err = openStore(db.DB); err != nil {
 			p.setStatus("database: " + err.Error())
 			return
 		}
@@ -732,7 +735,7 @@ func (p *Plugin) sendFile(chat, path string) {
 	}
 	// A copy, so the chat can show it later.
 	copyPath := filepath.Join(p.dir, "media", fmt.Sprintf("out-%d%s", time.Now().UnixNano(), ext))
-	_ = os.WriteFile(copyPath, data, 0o600)
+	_ = writeSealed(copyPath, data)
 	var msg *waE2E.Message
 	line := Msg{File: copyPath}
 	if isImage {
@@ -798,7 +801,7 @@ func (p *Plugin) fetch(chat, id string) (string, error) {
 		return r
 	}, id)
 	path := filepath.Join(p.dir, "media", safe+ext)
-	if err := os.WriteFile(path, data, 0o600); err != nil {
+	if err := writeSealed(path, data); err != nil {
 		return "", err
 	}
 	p.st.SetFile(chat, id, path)
@@ -830,12 +833,38 @@ func (p *Plugin) action(chat, line, id string) {
 			p.setStatus("could not load it: " + err.Error())
 			return
 		}
+		// The cache is sealed: the viewer gets a plain copy in a temp folder that
+		// is emptied when the plugin stops; "save" puts one into Downloads.
+		name := p.fileName(chat, line)
 		if id == "open" {
-			openPath(path)
+			if out, err := plainCopy(path, openDir(), name); err == nil {
+				openPath(out)
+			}
 		} else if id == "save" {
-			openPath(filepath.Dir(path))
+			if out, err := plainCopy(path, downloadsDir(), name); err == nil {
+				p.setStatus("saved to " + out)
+				openPath(filepath.Dir(out))
+			}
 		}
 	}
+}
+
+// fileName is a document's own name, or "" to use the cache name.
+func (p *Plugin) fileName(chat, line string) string {
+	m, ok := p.st.Get(chat, line)
+	if !ok || len(m.Media) == 0 {
+		return ""
+	}
+	var wm waE2E.Message
+	if proto.Unmarshal(m.Media, &wm) != nil || wm.GetDocumentMessage() == nil {
+		return ""
+	}
+	return filepath.Base(strings.Map(func(r rune) rune {
+		if r == '/' || r == '\\' || r == ':' {
+			return '_'
+		}
+		return r
+	}, wm.GetDocumentMessage().GetFileName()))
 }
 
 // openPath hands a file or link to the system.

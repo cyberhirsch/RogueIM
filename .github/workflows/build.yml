@@ -10,6 +10,10 @@ on:
 env:
   CARGO_TERM_COLOR: always
   PKGS: -p rogueim -p rim-cli -p rim-plugin-pomodoro -p rim-plugin-todo -p rim-plugin-player -p rim-plugin-mail -p rim-plugin-phone
+  # The Signal plugin's SQLCipher uses Rust crypto, but the rusqlite fork's build
+  # script still wants an OpenSSL path on Windows; nothing here links OpenSSL.
+  OPENSSL_LIB_DIR: unused
+  OPENSSL_INCLUDE_DIR: unused
   BINS: rogueim rim-cli rim-plugin-pomodoro rim-plugin-todo rim-plugin-player rim-plugin-mail rim-plugin-phone rim-plugin-whatsapp rim-plugin-telegram rim-plugin-signal
   # Go plugins, built with CGO off (pure Go SQLite), so they cross-compile.
   CGO_ENABLED: "0"

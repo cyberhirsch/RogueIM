@@ -25,7 +25,7 @@ use presage::proto::{AttachmentPointer, EditMessage, SyncMessage};
 use presage::store::{ContentExt, ContentsStore, StateStore, Thread};
 use presage::Manager;
 use presage_store_sqlite::SqliteStore;
-use rim_plugin_sdk::{Item, NetAction, NetContact, NetLine, Plugin, ToHost, ToPlugin};
+use rim_plugin_sdk::{sealed, Item, NetAction, NetContact, NetLine, Plugin, ToHost, ToPlugin};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -126,7 +126,8 @@ async fn start() {
     };
     let dir = data_dir();
     let _ = std::fs::create_dir_all(dir.join("media"));
-    let chats: Vec<Chat> = std::fs::read(dir.join("signal-chats.json"))
+    sealed::clear_open_copies();
+    let chats: Vec<Chat> = sealed::read(&dir.join("signal-chats.json"))
         .ok()
         .and_then(|b| serde_json::from_slice(&b).ok())
         .unwrap_or_default();
@@ -275,10 +276,19 @@ impl App {
         if let Some(s) = &self.store {
             return Ok(s.clone());
         }
-        let opts = sqlx::sqlite::SqliteConnectOptions::new()
-            .filename(self.dir.join("signal.db"))
+        let path = self.dir.join("signal.db");
+        let key = sealed::key().map(hex::encode);
+        if let Some(k) = &key {
+            encrypt_plain_db(&path, k).await?;
+        }
+        let mut opts = sqlx::sqlite::SqliteConnectOptions::new()
+            .filename(&path)
             .create_if_missing(true)
             .foreign_keys(true);
+        // SQLCipher with this plugin's key as the raw key (no passphrase stretching needed).
+        if let Some(k) = &key {
+            opts = opts.pragma("key", format!("\"x'{k}'\""));
+        }
         let store = SqliteStore::open_with_options(opts, OnNewIdentity::Trust)
             .await
             .map_err(|e| e.to_string())?;
@@ -303,7 +313,7 @@ impl App {
     fn save_chats(&self) {
         let list: Vec<&Chat> = self.chats.values().collect();
         let path = self.dir.join("signal-chats.json");
-        let _ = std::fs::write(&path, serde_json::to_vec_pretty(&list).unwrap_or_default());
+        let _ = sealed::write(&path, &serde_json::to_vec_pretty(&list).unwrap_or_default());
     }
 
     fn view(&mut self) {
@@ -920,7 +930,7 @@ impl App {
         }
         let m = self.manager.as_ref().ok_or("not linked")?;
         let data = m.get_attachment(a).await.map_err(|e| e.to_string())?;
-        std::fs::write(&path, data).map_err(|e| e.to_string())?;
+        sealed::write(&path, &data).map_err(|e| e.to_string())?;
         Ok(path)
     }
 
@@ -946,8 +956,24 @@ impl App {
         match self.fetch(&a).await {
             Ok(path) => match what {
                 "fetch" => self.refresh(id).await,
-                "open" => open_path(&path),
-                "save" => open_path(path.parent().unwrap_or(&path)),
+                // The cache is sealed: the viewer gets a plain copy in a temp
+                // folder emptied when the plugin stops; "save" puts one into Downloads.
+                "open" => {
+                    if let Ok(out) = sealed::plain_copy(&path, &sealed::open_dir(), a.file_name.as_deref()) {
+                        open_path(&out);
+                    }
+                }
+                "save" => match sealed::plain_copy(&path, &sealed::downloads_dir(), a.file_name.as_deref()) {
+                    Ok(out) => {
+                        self.status = format!("saved to {}", out.display());
+                        self.view();
+                        open_path(out.parent().unwrap_or(&out));
+                    }
+                    Err(e) => {
+                        self.status = format!("could not save it: {e}");
+                        self.view();
+                    }
+                },
                 _ => {}
             },
             Err(e) => {
@@ -1138,7 +1164,7 @@ impl App {
             Err(e) => return self.fail(id, ts, &label, &e.to_string()).await,
         };
         // A copy, so the chat shows it like an incoming one.
-        let _ = std::fs::write(self.media_path(&pointer), &data);
+        let _ = sealed::write(&self.media_path(&pointer), &data);
         let msg = DataMessage {
             attachments: vec![pointer],
             timestamp: Some(ts),
@@ -1236,6 +1262,34 @@ fn type_for(ext: &str) -> &'static str {
     }
 }
 
+/// A plain SQLite store from before encryption becomes a SQLCipher one with
+/// `key` (hex), via sqlcipher_export; the plain files are removed.
+async fn encrypt_plain_db(path: &Path, key: &str) -> Result<(), String> {
+    use sqlx::{Connection, Executor};
+    let head = match std::fs::read(path) {
+        Ok(b) => b,
+        Err(_) => return Ok(()),
+    };
+    if !head.starts_with(b"SQLite format 3\0") {
+        return Ok(());
+    }
+    let enc = path.with_extension("db.encrypting");
+    let _ = std::fs::remove_file(&enc);
+    // create_if_missing: ATTACH creates the new file with the connection's flags.
+    let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(path).create_if_missing(true);
+    let mut c = sqlx::SqliteConnection::connect_with(&opts).await.map_err(|e| e.to_string())?;
+    let target = enc.to_string_lossy().replace('\'', "''");
+    let attach = format!("ATTACH DATABASE '{target}' AS enc KEY \"x'{key}'\"");
+    c.execute(sqlx::AssertSqlSafe(attach)).await.map_err(|e| e.to_string())?;
+    c.execute("SELECT sqlcipher_export('enc')").await.map_err(|e| e.to_string())?;
+    c.execute("DETACH DATABASE enc").await.map_err(|e| e.to_string())?;
+    c.close().await.map_err(|e| e.to_string())?;
+    for ext in ["db-wal", "db-shm"] {
+        let _ = std::fs::remove_file(path.with_extension(ext));
+    }
+    std::fs::rename(&enc, path).map_err(|e| e.to_string())
+}
+
 /// Hands a file or folder to the system.
 fn open_path(path: &Path) {
     #[cfg(windows)]
@@ -1252,6 +1306,47 @@ fn open_path(path: &Path) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An old plain store becomes SQLCipher with the plugin key: unreadable
+    /// without it, and presage's store opens on it with the key.
+    #[tokio::test(flavor = "current_thread")]
+    async fn the_store_is_encrypted() {
+        use sqlx::{Connection, Executor, Row};
+        let dir = std::env::temp_dir().join(format!("rim-signal-db-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("signal.db");
+        let key = "44".repeat(32);
+
+        let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(&path).create_if_missing(true);
+        let mut c = sqlx::SqliteConnection::connect_with(&opts).await.unwrap();
+        c.execute("CREATE TABLE t (x TEXT); INSERT INTO t VALUES ('secret')").await.unwrap();
+        c.close().await.unwrap();
+
+        encrypt_plain_db(&path, &key).await.unwrap();
+        let disk = std::fs::read(&path).unwrap();
+        assert!(!disk.starts_with(b"SQLite format 3"));
+        assert!(!disk.windows(6).any(|w| w == b"secret"));
+
+        let keyed = |k: &str| sqlx::sqlite::SqliteConnectOptions::new().filename(&path).pragma("key", format!("\"x'{k}'\""));
+        let mut c = sqlx::SqliteConnection::connect_with(&keyed(&key)).await.unwrap();
+        let row = sqlx::query("SELECT x FROM t").fetch_one(&mut c).await.unwrap();
+        assert_eq!(row.get::<String, _>(0), "secret");
+        c.close().await.unwrap();
+        let wrong = sqlx::SqliteConnection::connect_with(&keyed(&"55".repeat(32))).await;
+        let failed = match wrong {
+            Err(_) => true,
+            Ok(mut c) => sqlx::query("SELECT x FROM t").fetch_one(&mut c).await.is_err(),
+        };
+        assert!(failed, "opened with the wrong key");
+
+        // presage's own store, created fresh under SQLCipher.
+        let fresh = dir.join("fresh.db");
+        let opts = sqlx::sqlite::SqliteConnectOptions::new().filename(&fresh).create_if_missing(true).foreign_keys(true).pragma("key", format!("\"x'{key}'\""));
+        SqliteStore::open_with_options(opts, OnNewIdentity::Trust).await.unwrap();
+        assert!(!std::fs::read(&fresh).unwrap().starts_with(b"SQLite format 3"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn group_ids_do_not_carry_the_key() {

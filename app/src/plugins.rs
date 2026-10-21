@@ -41,6 +41,14 @@ pub fn exe_for(m: &Manifest) -> Option<PathBuf> {
     [dir.join(&name), dir.join("plugins").join(&name)].into_iter().find(|p| p.exists())
 }
 
+/// A plugin's own key for its data at rest (rim_plugin_sdk::sealed), derived
+/// from the profile's data key, so one plugin cannot read another's files.
+pub fn plugin_key(data_key: &[u8; 32], id: &str) -> [u8; 32] {
+    let mut material = data_key.to_vec();
+    material.extend_from_slice(id.as_bytes());
+    blake3::derive_key("RogueIM plugin data v1", &material)
+}
+
 struct Running {
     child: Child,
     out: Arc<Mutex<Option<Box<dyn Write + Send>>>>,
@@ -63,7 +71,8 @@ impl Host {
         self.running.contains_key(id)
     }
 
-    pub fn start(&mut self, m: &Manifest, data_dir: &Path) -> Result<(), String> {
+    /// `key`: the profile's data key; the plugin gets its own key derived from it.
+    pub fn start(&mut self, m: &Manifest, data_dir: &Path, key: &[u8; 32]) -> Result<(), String> {
         use interprocess::local_socket::{prelude::*, GenericNamespaced, ListenerOptions};
         if self.running.contains_key(&m.id) {
             return Ok(());
@@ -75,7 +84,7 @@ impl Host {
         let data = data_dir.join("plugins").join(&m.id);
         let _ = std::fs::create_dir_all(&data);
         let mut cmd = Command::new(exe);
-        cmd.env(SOCKET_ENV, &sock).env("RIM_PLUGIN_DATA", &data);
+        cmd.env(SOCKET_ENV, &sock).env("RIM_PLUGIN_DATA", &data).env(rim_plugin_sdk::sealed::KEY_ENV, hex::encode(plugin_key(key, &m.id)));
         #[cfg(windows)]
         {
             use std::os::windows::process::CommandExt;

@@ -199,7 +199,7 @@ fn main() {
         eprintln!("rim-plugin-player is started by RogueIM (settings > plugins).");
         std::process::exit(2);
     };
-    let mut share = std::fs::read_to_string(std::env::var("RIM_PLUGIN_DATA").unwrap_or_default() + "/share").map(|s| s.trim() == "1").unwrap_or(false);
+    let mut share = rim_plugin_sdk::sealed::read(&std::path::Path::new(&std::env::var("RIM_PLUGIN_DATA").unwrap_or_default()).join("share")).map(|s| s.trim_ascii() == b"1").unwrap_or(false);
     let mut last = Now { title: "\u{0}".into(), ..Default::default() };
     let mut shared = String::new();
     loop {
@@ -222,7 +222,7 @@ fn main() {
                 share = checked;
                 if let Ok(d) = std::env::var("RIM_PLUGIN_DATA") {
                     let _ = std::fs::create_dir_all(&d);
-                    let _ = std::fs::write(format!("{d}/share"), if share { "1" } else { "0" });
+                    let _ = rim_plugin_sdk::sealed::write(&std::path::Path::new(&d).join("share"), if share { b"1" } else { b"0" });
                 }
             }
             _ => {}

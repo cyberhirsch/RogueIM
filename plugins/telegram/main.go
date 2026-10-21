@@ -6,6 +6,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -91,9 +92,10 @@ func main() {
 		dir = "."
 	}
 	_ = os.MkdirAll(filepath.Join(dir, "media"), 0o700)
+	clearOpenCopies()
 	p := &Plugin{host: host, dir: dir, users: map[int64]*tg.User{}, chats: map[int64]*tg.Chat{}, channels: map[int64]*tg.Channel{},
 		dialogs: map[string]*dialog{}, open: map[string]bool{}, hist: map[string][]*tg.Message{}, pending: map[string][]NetLine{}, loading: map[string]bool{}}
-	if b, err := os.ReadFile(filepath.Join(dir, "telegram.json")); err == nil {
+	if b, err := readSealed(filepath.Join(dir, "telegram.json")); err == nil {
 		_ = json.Unmarshal(b, &p.cfg)
 	}
 	host.Send(map[string]any{"t": "channel", "label": "telegram", "level": "D", "warning": warning, "files": true})
@@ -105,6 +107,7 @@ func main() {
 		switch m.T {
 		case "stop":
 			p.stop()
+			clearOpenCopies()
 			return
 		case "click":
 			p.click(m.ID)
@@ -137,7 +140,7 @@ func main() {
 
 func (p *Plugin) saveConfig() {
 	b, _ := json.Marshal(p.cfg)
-	_ = os.WriteFile(filepath.Join(p.dir, "telegram.json"), b, 0o600)
+	_ = writeSealed(filepath.Join(p.dir, "telegram.json"), b)
 }
 
 func (p *Plugin) setStatus(s string) {
@@ -273,7 +276,7 @@ func (p *Plugin) run(ctx context.Context) error {
 		return d.Handle(ctx, u)
 	})
 	client := telegram.NewClient(p.cfg.APIID, p.cfg.APIHash, telegram.Options{
-		SessionStorage: &session.FileStorage{Path: filepath.Join(p.dir, "telegram.session")},
+		SessionStorage: sealedSession{filepath.Join(p.dir, "telegram.session")},
 		UpdateHandler:  handler,
 		Device:         telegram.DeviceConfig{DeviceModel: "RogueIM", SystemVersion: runtime.GOOS, AppVersion: version},
 	})
@@ -1164,12 +1167,27 @@ func (p *Plugin) fetch(m *tg.Message) (string, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 	defer cancel()
-	tmp := path + ".part"
-	if _, err := downloader.NewDownloader().Download(api, loc).ToPath(ctx, tmp); err != nil {
-		_ = os.Remove(tmp)
+	// Into memory, then sealed: no plain copy touches the disk.
+	var buf bytes.Buffer
+	if _, err := downloader.NewDownloader().Download(api, loc).Stream(ctx, &buf); err != nil {
 		return "", err
 	}
-	return path, os.Rename(tmp, path)
+	return path, writeSealed(path, buf.Bytes())
+}
+
+// sealedSession keeps the Telegram login sealed like the other plugin files.
+type sealedSession struct{ path string }
+
+func (s sealedSession) LoadSession(context.Context) ([]byte, error) {
+	b, err := readSealed(s.path)
+	if errors.Is(err, os.ErrNotExist) || (err == nil && len(b) == 0) {
+		return nil, session.ErrNotFound
+	}
+	return b, err
+}
+
+func (s sealedSession) StoreSession(_ context.Context, data []byte) error {
+	return writeSealed(s.path, data)
 }
 
 // fetchQuiet loads a picture for the chat once, without bothering anyone.
@@ -1219,12 +1237,37 @@ func (p *Plugin) action(chat, line, id string) {
 		switch id {
 		case "fetch":
 			p.refresh(chat)
+		// The cache is sealed: the viewer gets a plain copy in a temp folder that
+		// is emptied when the plugin stops; "save" puts one into Downloads.
 		case "open":
-			openPath(path)
+			if out, err := plainCopy(path, openDir(), fileName(m)); err == nil {
+				openPath(out)
+			}
 		case "save":
-			openPath(filepath.Dir(path))
+			if out, err := plainCopy(path, downloadsDir(), fileName(m)); err == nil {
+				p.setStatus("saved to " + out)
+				openPath(filepath.Dir(out))
+			}
 		}
 	}
+}
+
+// fileName is a document's own name, or "" to use the cache name.
+func fileName(m *tg.Message) string {
+	md, ok := m.Media.(*tg.MessageMediaDocument)
+	if !ok {
+		return ""
+	}
+	d, ok := md.Document.(*tg.Document)
+	if !ok {
+		return ""
+	}
+	for _, a := range d.Attributes {
+		if f, ok := a.(*tg.DocumentAttributeFilename); ok && !strings.ContainsAny(f.FileName, `/\:`) {
+			return f.FileName
+		}
+	}
+	return ""
 }
 
 func describeText(m *tg.Message) string {

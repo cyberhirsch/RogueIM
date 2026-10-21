@@ -21,6 +21,8 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+pub mod sealed;
+
 pub const SOCKET_ENV: &str = "RIM_PLUGIN_SOCKET";
 
 /// One element of a plugin's sidebar section. Items with the same `row` are

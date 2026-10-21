@@ -58,6 +58,10 @@ pub struct Persist {
     pub remote_status: HashMap<String, String>,
     #[serde(default)]
     pub own_last_seen: HashMap<String, i64>,
+    /// Random key for the app's local data outside this file (plugin data), hex.
+    /// Per device; made on first unlock.
+    #[serde(default)]
+    pub data_key: Option<String>,
 }
 
 fn yes() -> bool {

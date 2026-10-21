@@ -114,13 +114,13 @@ impl State {
         self.dnd = v["dnd"].as_bool().unwrap_or(self.dnd);
     }
     fn load(&mut self) {
-        if let Some(v) = std::fs::read(data_dir().join("pomodoro.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
+        if let Some(v) = rim_plugin_sdk::sealed::read(&data_dir().join("pomodoro.json")).ok().and_then(|b| serde_json::from_slice::<serde_json::Value>(&b).ok()) {
             self.apply_settings(&v);
         }
     }
     fn save(&self) {
         let _ = std::fs::create_dir_all(data_dir());
-        let _ = std::fs::write(data_dir().join("pomodoro.json"), self.settings_json().to_string());
+        let _ = rim_plugin_sdk::sealed::write(&data_dir().join("pomodoro.json"), self.settings_json().to_string().as_bytes());
     }
 }
 

@@ -39,14 +39,14 @@ fn data_dir() -> PathBuf {
 }
 
 fn load_config() -> Config {
-    let v: serde_json::Value = std::fs::read(data_dir().join("todo.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(json!({}));
+    let v: serde_json::Value = rim_plugin_sdk::sealed::read(&data_dir().join("todo.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or(json!({}));
     let s = |k: &str| v[k].as_str().unwrap_or("").to_string();
     Config { backend: s("backend"), path: s("path"), url: s("url"), user: s("user") }
 }
 
 fn save_config(c: &Config) {
     let _ = std::fs::create_dir_all(data_dir());
-    let _ = std::fs::write(data_dir().join("todo.json"), json!({"backend": c.backend, "path": c.path, "url": c.url, "user": c.user}).to_string());
+    let _ = rim_plugin_sdk::sealed::write(&data_dir().join("todo.json"), json!({"backend": c.backend, "path": c.path, "url": c.url, "user": c.user}).to_string().as_bytes());
 }
 
 fn keychain(c: &Config) -> Option<keyring::Entry> {
@@ -104,12 +104,12 @@ fn order_path() -> PathBuf {
 }
 
 fn load_order() -> Vec<String> {
-    std::fs::read(order_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    rim_plugin_sdk::sealed::read(&order_path()).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 fn save_order(order: &[String]) {
     let _ = std::fs::create_dir_all(data_dir());
-    let _ = std::fs::write(order_path(), serde_json::to_string(order).unwrap_or_default());
+    let _ = rim_plugin_sdk::sealed::write(&order_path(), serde_json::to_string(order).unwrap_or_default().as_bytes());
 }
 
 /// Sort tasks by their UID's place in `order`; tasks not in it keep their

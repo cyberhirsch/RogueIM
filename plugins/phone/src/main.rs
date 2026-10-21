@@ -51,12 +51,12 @@ fn data_dir() -> PathBuf {
 }
 
 fn load<T: for<'de> Deserialize<'de> + Default>(name: &str) -> T {
-    std::fs::read(data_dir().join(name)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    rim_plugin_sdk::sealed::read(&data_dir().join(name)).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 fn save<T: Serialize>(name: &str, v: &T) {
     let _ = std::fs::create_dir_all(data_dir());
-    let _ = std::fs::write(data_dir().join(name), serde_json::to_vec_pretty(v).unwrap_or_default());
+    let _ = rim_plugin_sdk::sealed::write(&data_dir().join(name), &serde_json::to_vec_pretty(v).unwrap_or_default());
 }
 
 fn now() -> i64 {

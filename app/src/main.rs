@@ -401,6 +401,8 @@ struct App {
     send_to: String,
     send_query: String,
     send_job: Option<send::Job>,
+    /// Key for plugin data at rest, from the unlocked profile.
+    data_key: Option<[u8; 32]>,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     last_room: Instant,
 }
@@ -509,8 +511,13 @@ fn decode_picture(b64: &str) -> Option<slint::Image> {
 }
 
 /// A picture file (from a plugin) for the UI, big photos scaled down.
-fn load_picture(path: &Path) -> Option<slint::Image> {
-    let mut img = image::open(path).ok()?;
+fn load_picture(path: &Path, key: Option<&[u8; 32]>) -> Option<slint::Image> {
+    let data = std::fs::read(path).ok()?;
+    let data = match key {
+        Some(k) if rim_plugin_sdk::sealed::is_sealed(&data) => rim_plugin_sdk::sealed::open_from(k, path, &data).ok()?,
+        _ => data,
+    };
+    let mut img = image::load_from_memory(&data).ok()?;
     if img.width().max(img.height()) > 1600 {
         img = img.thumbnail(1600, 1600);
     }
@@ -754,9 +761,11 @@ fn refresh_chat(app: &AppRc, key: &str) {
         // Decode new pictures once.
         let mut a = app.borrow_mut();
         let todo: Vec<(u64, String)> = a.histories.get(key).map(|v| v.iter().filter(|l| !a.images.contains_key(&l.id)).filter_map(|l| l.image.clone().map(|i| (l.id, i))).collect()).unwrap_or_default();
+        // Pictures of other networks are sealed with that plugin's key.
+        let plugin_key = net_key(key).zip(a.data_key).map(|((p, _), k)| plugins::plugin_key(&k, p));
         for (id, b64) in todo {
             let img = match b64.strip_prefix("file:") {
-                Some(path) => load_picture(Path::new(path)),
+                Some(path) => load_picture(Path::new(path), plugin_key.as_ref()),
                 None => decode_picture(&b64),
             };
             if let Some(img) = img {
@@ -1439,6 +1448,7 @@ fn lock(app: &AppRc, reason: &str) {
         a.docked_chat = None;
         a.auto_prev = None;
         a.host.stop_all();
+        a.data_key = None;
         a.gadget_rows.clear();
         a.gadgets.set_vec(vec![]);
         a.main.upgrade()
@@ -1854,10 +1864,11 @@ fn handle_event(app: &AppRc, ev: Event) {
 }
 
 fn on_unlocked(app: &AppRc, ev: Event) {
-    let Event::Unlocked { nick, fingerprint, os, device_class, status, away_msg } = ev else { return };
+    let Event::Unlocked { nick, fingerprint, os, device_class, status, away_msg, data_key } = ev else { return };
     let Some(m) = app.borrow().main.upgrade() else { return };
     {
         let mut a = app.borrow_mut();
+        a.data_key = Some(data_key.0);
         a.my_nick = nick.clone();
         a.my_status = status;
         a.my_os = os.clone();
@@ -2622,6 +2633,7 @@ fn main() {
         send_to: String::new(),
         send_query: String::new(),
         send_job: None,
+        data_key: None,
         last_room: Instant::now(),
     }));
     for e in register_hotkeys(&app) {
@@ -3821,8 +3833,10 @@ fn refresh_plugin_rows(app: &AppRc) {
 
 fn start_plugin(app: &AppRc, id: &str) {
     let Some(man) = plugins::first_party().into_iter().find(|p| p.id == id) else { return };
-    let dir = app.borrow().dir.clone();
-    let res = app.borrow_mut().host.start(&man, &dir);
+    let (dir, key) = (app.borrow().dir.clone(), app.borrow().data_key);
+    // Plugins run only on an unlocked profile: their data is sealed with its key.
+    let Some(key) = key else { return };
+    let res = app.borrow_mut().host.start(&man, &dir, &key);
     if let Err(e) = res {
         notice(app, &format!("{}: {e}", man.name));
         return;

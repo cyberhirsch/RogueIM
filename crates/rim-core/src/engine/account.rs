@@ -92,6 +92,7 @@ fn base_persist(kp: &Keypair, olm: &Account, seeds: DeviceSeeds, name: String) -
         send_typing: true,
         remote_status: HashMap::new(),
         own_last_seen: HashMap::new(),
+        data_key: None,
     }
 }
 

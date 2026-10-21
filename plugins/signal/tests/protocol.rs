@@ -32,6 +32,7 @@ fn start(tag: &str) -> Run {
     let child = std::process::Command::new(env!("CARGO_BIN_EXE_rim-plugin-signal"))
         .env("RIM_PLUGIN_SOCKET", &sock)
         .env("RIM_PLUGIN_DATA", &data)
+        .env("RIM_PLUGIN_KEY", "66".repeat(32))
         .spawn()
         .unwrap();
     let conn = listener.incoming().next().unwrap().unwrap();

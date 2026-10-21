@@ -11,5 +11,5 @@ pub mod mailbox;
 pub mod proto;
 pub mod store;
 
-pub use engine::{spawn, Command, EngineConfig, EngineHandle, Event};
+pub use engine::{spawn, Command, DataKey, EngineConfig, EngineHandle, Event};
 pub use proto::*;

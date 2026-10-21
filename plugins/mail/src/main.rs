@@ -38,12 +38,12 @@ fn data_dir() -> PathBuf {
 }
 
 fn load_config() -> Config {
-    std::fs::read(data_dir().join("mail.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    rim_plugin_sdk::sealed::read(&data_dir().join("mail.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
 }
 
 fn save_config(c: &Config) {
     let _ = std::fs::create_dir_all(data_dir());
-    let _ = std::fs::write(data_dir().join("mail.json"), serde_json::to_string_pretty(c).unwrap_or_default());
+    let _ = rim_plugin_sdk::sealed::write(&data_dir().join("mail.json"), serde_json::to_string_pretty(c).unwrap_or_default().as_bytes());
 }
 
 fn login(c: &Config) -> String {

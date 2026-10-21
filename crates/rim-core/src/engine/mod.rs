@@ -193,9 +193,20 @@ pub enum Command {
     Shutdown,
 }
 
+/// Key for the app's local data outside the state file (PRD SEC: plugin data at rest).
+/// Never printed.
+#[derive(Clone)]
+pub struct DataKey(pub [u8; 32]);
+
+impl std::fmt::Debug for DataKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("DataKey(..)")
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum Event {
-    Unlocked { nick: String, fingerprint: String, os: String, device_class: DeviceClass, status: Status, away_msg: String },
+    Unlocked { nick: String, fingerprint: String, os: String, device_class: DeviceClass, status: Status, away_msg: String, data_key: DataKey },
     LoginFailed(String),
     /// A new account was created: show these 24 words once.
     RecoveryKey(String),
@@ -506,8 +517,9 @@ impl Engine {
         self.emit_all();
     }
 
-    pub fn emit_unlocked(&self) {
+    pub fn emit_unlocked(&mut self) {
         let fp = crate::identity::pretty_fingerprint(&self.my_account_id());
+        let data_key = self.data_key();
         self.emit(Event::Unlocked {
             nick: self.p.nick.clone(),
             fingerprint: fp,
@@ -515,7 +527,19 @@ impl Engine {
             device_class: self.device_class,
             status: self.p.status,
             away_msg: self.p.away_msg.clone(),
+            data_key,
         });
+    }
+
+    /// The local data key, made once per device and kept inside the state file.
+    fn data_key(&mut self) -> DataKey {
+        if let Some(k) = self.p.data_key.as_deref().and_then(|h| hex::decode(h).ok()).and_then(|b| <[u8; 32]>::try_from(b).ok()) {
+            return DataKey(k);
+        }
+        let k: [u8; 32] = rand::random();
+        self.p.data_key = Some(hex::encode(k));
+        self.save();
+        DataKey(k)
     }
 
     pub fn emit_all(&self) {
