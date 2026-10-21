@@ -202,7 +202,7 @@ export component ChatPane inherits Rectangle {
                                 Text { text: l.time; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
                                 if l.urgent: Text { text: "urgent"; color: Theme.red; font-size: 10px; font-weight: 700; vertical-alignment: center; }
                                 if l.edited: Text { text: "edited"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
-                                if l.expires: Text { text: "⌛"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
+                                if l.expires: Text { text: "◷"; color: Theme.faint; font-size: 10px; vertical-alignment: center; }
                                 Rectangle { }
                                 if l.state != "": Text {
                                     text: l.state;

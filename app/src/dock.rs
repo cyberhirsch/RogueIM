@@ -256,7 +256,42 @@ mod imp {
         }
     }
 
+    /// The part of a monitor that windows may use: without the menu bar and
+    /// the Dock. Placing the bar under the menu bar makes macOS push it down
+    /// itself, which left a gap.
+    #[cfg(target_os = "macos")]
+    fn mac_visible(mon: &Monitor) -> Option<Monitor> {
+        use objc2_app_kit::NSScreen;
+        use objc2_foundation::MainThreadMarker;
+        let mtm = MainThreadMarker::new()?;
+        let screens = NSScreen::screens(mtm);
+        // Cocoa counts y upwards from the bottom of the first screen.
+        let primary_h = screens.iter().next()?.frame().size.height;
+        let sc = mon.dpi as f64 / 96.0;
+        for s in screens.iter() {
+            let f = s.frame();
+            let (fl, ft) = (f.origin.x * sc, (primary_h - f.origin.y - f.size.height) * sc);
+            if (fl - mon.left as f64).abs() > 2.0 || (ft - mon.top as f64).abs() > 2.0 {
+                continue;
+            }
+            let v = s.visibleFrame();
+            let top = (primary_h - v.origin.y - v.size.height) * sc;
+            return Some(Monitor {
+                left: (v.origin.x * sc).round() as i32,
+                top: top.round() as i32,
+                right: ((v.origin.x + v.size.width) * sc).round() as i32,
+                bottom: (top + v.size.height * sc).round() as i32,
+                ..mon.clone()
+            });
+        }
+        None
+    }
+
     pub fn dock(w: &slint::Window, width_logical: f32, left: bool, mon: &Monitor, reserve: bool) -> bool {
+        #[cfg(target_os = "macos")]
+        let visible = mac_visible(mon);
+        #[cfg(target_os = "macos")]
+        let mon = visible.as_ref().unwrap_or(mon);
         let width = (width_logical * mon.dpi as f32 / 96.0).round().max(4.0) as i32;
         let x = if left { mon.left } else { mon.right - width };
         super::place(w, x, mon.top, width as u32, (mon.bottom - mon.top) as u32);

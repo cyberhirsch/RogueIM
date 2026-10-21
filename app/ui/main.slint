@@ -464,7 +464,7 @@ export component MainWindow inherits Window {
             TButton { glyph: "@"; tip: "invite someone: make a code to send them"; active: root.panel == 2; clicked => { root.panel = root.panel == 2 ? 0 : 2; } }
             TButton { glyph: "#"; tip: "new group chat"; active: root.panel == 5; clicked => { root.panel = root.panel == 5 ? 0 : 5; } }
             TButton { glyph: "?"; tip: "search all chats"; active: root.panel == 4; clicked => { root.panel = root.panel == 4 ? 0 : 4; } }
-            TButton { glyph: "⚙"; tip: "settings"; active: root.panel == 3; clicked => { root.panel = root.panel == 3 ? 0 : 3; } }
+            TButton { glyph: "≡"; tip: "settings"; active: root.panel == 3; clicked => { root.panel = root.panel == 3 ? 0 : 3; } }
             Rectangle { }
             TButton { glyph: "<"; tip: "move the bar one screen edge to the left"; clicked => { if (root.can-move-left) { root.move-dock(-1); } } }
             TButton { glyph: ">"; tip: "move the bar one screen edge to the right"; clicked => { if (root.can-move-right) { root.move-dock(1); } } }
@@ -1125,7 +1125,7 @@ export component MainWindow inherits Window {
                             VerticalLayout {
                                 alignment: center;
                                 Text {
-                                    text: c.name + (c.verified ? " ✓" : "") + (c.bot ? " [bot]" : "") + (c.unread > 0 ? "  (" + c.unread + ")" : "");
+                                    text: c.name + (c.verified ? " √" : "") + (c.bot ? " [bot]" : "") + (c.unread > 0 ? "  (" + c.unread + ")" : "");
                                     color: c.unread > 0 ? Theme.accent : (c.status == "Offline" ? Theme.dim : Theme.fg);
                                     font-weight: c.unread > 0 ? 700 : 400;
                                     overflow: elide;

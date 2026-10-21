@@ -77,6 +77,10 @@ struct Settings {
     layout_updated: i64,
     update_check: bool,
     update_auto: bool,
+    /// Automatic updates became the default in 0.1.10; switched on once for
+    /// profiles from before. Missing in older files, hence false there.
+    #[serde(default)]
+    update_auto_default: bool,
     /// Rogue, the public AI contact: wanted, and whether it was added once already.
     rogue: bool,
     rogue_added: bool,
@@ -126,7 +130,8 @@ impl Default for Settings {
             hotkeys: desktop::DEFAULT_HOTKEYS.iter().map(|s| s.to_string()).collect(),
             layout_updated: 0,
             update_check: true,
-            update_auto: false,
+            update_auto: true,
+            update_auto_default: true,
             rogue: true,
             on_top: true,
             make_room: false,
@@ -139,7 +144,13 @@ impl Default for Settings {
 }
 
 fn load_settings(dir: &Path) -> Settings {
-    std::fs::read(dir.join("ui.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default()
+    let mut s: Settings = std::fs::read(dir.join("ui.json")).ok().and_then(|b| serde_json::from_slice(&b).ok()).unwrap_or_default();
+    if !s.update_auto_default {
+        s.update_auto_default = true;
+        s.update_auto = true;
+        save_settings(dir, &s);
+    }
+    s
 }
 
 fn save_settings(dir: &Path, s: &Settings) {
