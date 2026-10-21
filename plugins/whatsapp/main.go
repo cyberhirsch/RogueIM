@@ -200,7 +200,7 @@ func (p *Plugin) start() {
 		return
 	}
 	// The name the phone shows under "Linked devices".
-	store.SetOSInfo("RogueIM", [3]uint32{0, 1, 8})
+	store.SetOSInfo("RogueIM", [3]uint32{0, 1, 10})
 	cli := whatsmeow.NewClient(device, waLog.Noop)
 	cli.AddEventHandler(p.event)
 	p.mu.Lock()

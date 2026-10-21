@@ -4,7 +4,7 @@
 
 [package]
 name = "rim-plugin-signal"
-version = "0.1.9"
+version = "0.1.10"
 edition = "2021"
 # presage and libsignal are AGPL-3.0; so is this plugin (RogueIM itself: GPL-3.0-or-later).
 license = "AGPL-3.0-only"
