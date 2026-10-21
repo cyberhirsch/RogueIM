@@ -308,10 +308,14 @@ impl Engine {
                     self.flush_outbox_for_device(&p);
                     self.ask_held(&p);
                     self.group_catch_up(&p);
+                    self.emit_contacts();
                 }
             }
             SwarmEvent::ConnectionClosed { peer_id, connection_id, .. } => {
                 let lost = self.files_rt.connection_down(peer_id, connection_id);
+                if lost && self.owner_of_peer(&peer_id.to_string()).is_some() {
+                    self.emit_contacts();
+                }
                 if lost && self.presence.get(&peer_id.to_string()).map(|r| r.ttl == super::PRESENCE_TTL).unwrap_or(false) {
                     self.presence.remove(&peer_id.to_string());
                     self.emit_contacts();

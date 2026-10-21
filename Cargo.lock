@@ -3611,6 +3611,7 @@ dependencies = [
  "http",
  "http-body",
  "httparse",
+ "httpdate",
  "itoa",
  "pin-project-lite",
  "smallvec",
@@ -7786,6 +7787,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "rim-drop"
+version = "0.1.9"
+dependencies = [
+ "aes-gcm",
+ "base64 0.22.1",
+ "futures-util",
+ "getrandom 0.2.17",
+ "http-body-util",
+ "hyper",
+ "hyper-util",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tokio-util",
+ "ureq",
+]
+
+[[package]]
 name = "rim-llm-bot"
 version = "0.1.9"
 dependencies = [
@@ -7929,6 +7948,7 @@ dependencies = [
  "raw-window-handle",
  "rfd",
  "rim-core",
+ "rim-drop",
  "rim-plugin-sdk",
  "rodio",
  "serde",

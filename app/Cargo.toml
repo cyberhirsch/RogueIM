@@ -30,6 +30,7 @@ notify-rust = "4"
 raw-window-handle = "0.6"
 rfd = "0.17"
 rim-core = { version = "0.1.0", path = "../crates/rim-core" }
+rim-drop = { version = "0.1.0", path = "../crates/rim-drop", features = ["client"] }
 rim-plugin-sdk = { version = "0.1.0", path = "../crates/rim-plugin-sdk" }
 rodio = { version = "0.22", default-features = false, features = ["playback", "wav", "mp3", "vorbis", "flac"] }
 serde = { version = "1.0.229", features = ["derive"] }

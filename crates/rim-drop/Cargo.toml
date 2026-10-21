@@ -1,0 +1,35 @@
+[package]
+name = "rim-drop"
+version.workspace = true
+edition = "2024"
+license.workspace = true
+description = "Send to anyone (PRD HB-3): the file format, and the drop server that keeps only ciphertext"
+
+[features]
+default = []
+# The upload, for the app.
+client = ["dep:ureq"]
+# The HTTP server (bin rim-drop), for the Pi.
+server = ["dep:hyper", "dep:hyper-util", "dep:http-body-util", "dep:tokio", "dep:tokio-util", "dep:futures-util"]
+
+[dependencies]
+aes-gcm = "0.10.3"
+base64 = "0.22.1"
+getrandom = "0.2.17"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hyper = { version = "1", features = ["server", "http1"], optional = true }
+hyper-util = { version = "0.1", features = ["tokio"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "time", "sync"], optional = true }
+tokio-util = { version = "0.7", features = ["io"], optional = true }
+futures-util = { version = "0.3", optional = true }
+ureq = { version = "3", optional = true }
+
+[dev-dependencies]
+ureq = "3"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "fs", "io-util", "time", "sync"] }
+
+[[bin]]
+name = "rim-drop"
+required-features = ["server"]

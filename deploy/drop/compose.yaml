@@ -1,0 +1,28 @@
+# rim-drop behind a Cloudflare tunnel, e.g. on a Raspberry Pi.
+#   1. Cloudflare dashboard -> Zero Trust -> Networks -> Tunnels: create a tunnel,
+#      public hostname drop.example.com -> http://rim-drop:8080, copy its token.
+#   2. cp .env.example .env and fill in TUNNEL_TOKEN and RIM_DROP_TOKEN
+#      (RIM_DROP_TOKEN: at least 24 characters, e.g. `openssl rand -base64 32`).
+#   3. docker compose up -d --build
+# No port is opened on the box; the tunnel connects outwards.
+services:
+  rim-drop:
+    build:
+      context: ../..
+      dockerfile: deploy/drop/Dockerfile
+    image: rim-drop
+    restart: unless-stopped
+    environment:
+      RIM_DROP_TOKEN: ${RIM_DROP_TOKEN}
+    command: ["--quota-gb", "${RIM_DROP_QUOTA_GB:-100}", "--max-file-gb", "${RIM_DROP_MAX_FILE_GB:-20}"]
+    volumes:
+      - ${RIM_DROP_DATA:-./data}:/data
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN}
+    depends_on:
+      - rim-drop

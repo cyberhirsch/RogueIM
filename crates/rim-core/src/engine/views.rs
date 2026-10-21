@@ -97,6 +97,7 @@ impl Engine {
                     urgent_allowed: c.urgent_allowed,
                     notify_online: c.notify_online,
                     auto_accept: c.auto_accept,
+                    direct: c.devices.iter().any(|d| d.entry.peer_id.parse().is_ok_and(|p| self.files_rt.direct.contains(&p))),
                 }
             })
             .collect();

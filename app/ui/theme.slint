@@ -189,7 +189,14 @@ export component OsIcon inherits Rectangle {
         }
     }
 
-    if root.device != "laptop" && root.device != "mobile" && root.device != "group" && root.device != "notes" && root.device != "mail": Rectangle {
+    // "send to someone": an arrow out of a box.
+    if root.device == "send": Rectangle {
+        x: 6px; y: 0px; width: 22px; height: 26px;
+        border-width: 1px; border-color: root.tint;
+        Text { text: "→"; color: root.tint; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }
+    }
+
+    if root.device != "laptop" && root.device != "mobile" && root.device != "group" && root.device != "notes" && root.device != "mail" && root.device != "send": Rectangle {
         x: 2px; y: 0px; width: 30px; height: 19px;
         border-width: 1px; border-color: root.tint;
         Text { text: root.os == "" ? "?" : root.os; color: root.tint; font-size: 8px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; }

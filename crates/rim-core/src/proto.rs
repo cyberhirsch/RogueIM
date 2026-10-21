@@ -567,6 +567,9 @@ pub struct ContactView {
     pub urgent_allowed: bool,
     pub notify_online: bool,
     pub auto_accept: bool,
+    /// At least one of their devices is connected directly (level A); otherwise
+    /// messages go through the Nostr mailbox (level B, still end-to-end encrypted).
+    pub direct: bool,
 }
 
 #[derive(Debug, Clone)]

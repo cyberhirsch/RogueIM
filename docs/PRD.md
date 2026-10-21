@@ -253,7 +253,7 @@ keys, contacts or history. RIM draws everything; no web pages, no embedded brows
 |---|---|---|
 | HB-1 | Plugin API for networks: a plugin offers contacts, presence, chats, messages (in and out), unread counts and its login flow; RIM shows them in the buddy list and chat windows | P2 |
 | HB-2 | **Email** (IMAP/SMTP): people you write to become contacts in a `mail` folder, a correspondent's mails form one chat, plain text only, quotes and signatures trimmed | P2 |
-| HB-3 | **Send to anyone**: RIM encrypts a file, uploads only the ciphertext to storage the user chooses (own node, WebDAV/Nextcloud, S3) and gives a link with the key in the `#fragment`; the recipient's browser decrypts it on the RIM website. Expiry and download limit per link | P2 |
+| HB-3 | **Send to anyone**: "send to someone" under note to self: one search over every contact list; a file of any size goes directly to a RIM contact on a direct connection, otherwise RIM encrypts it, uploads only the ciphertext to a drop (`rim-drop`, self-hosted; WebDAV/S3 later) and sends a link with the key in the `#fragment` through the recipient's channel; the recipient's browser decrypts it on the RIM website. Expiry per drop setting, download limit per link | P2 |
 | HB-4 | **Telegram** via TDLib (Telegram's own client library) | P2 |
 | HB-5 | **WhatsApp** via whatsmeow as a linked device. Unofficial and against WhatsApp's terms: the account can be blocked. Only after an explicit warning | P3 |
 | HB-6 | **Signal** via presage as a linked device. Unofficial, marked experimental | P3 |

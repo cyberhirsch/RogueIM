@@ -28,6 +28,8 @@ export struct ContactRow {
     music: string,
     // other online devices, shown on hover
     devs: string,
+    // how the conversation travels: "A".."D" (PRD TH-1), "" for none
+    level: string,
 }
 
 export struct PendingRow { id: string, nick: string, fp: string, text: string, introduced-by: string, warning: string }
@@ -44,6 +46,7 @@ export struct ThemeRow { names: [string] }
 export struct Gadget { id: string, name: string, collapsed: bool, rows: [GadgetRow] }
 export struct PluginRow { id: string, name: string, description: string, caps: string, enabled: bool, installed: bool, usage: string, first: bool, last: bool }
 export struct ListRow { kind: string, id: string, name: string }
+export struct SendRow { key: string, name: string, place: string, level: string }
 export struct BotRow { name: string, info: string }
 export struct SoundRow { label: string, on: bool, source: string }
 
@@ -145,8 +148,33 @@ export component MainWindow inherits Window {
     in property <string> custom-error;
     callback custom-theme(string, string, string);
     in-out property <string> away-msg;
-    // 0 none, 1 add, 2 invite, 3 settings, 4 search, 5 new group, 6 contact, 7 group
+    // 0 none, 1 add, 2 invite, 3 settings, 4 search, 5 new group, 6 contact, 7 group, 8 send to someone
     in-out property <int> panel: 0;
+    // send to someone (PRD HB-3)
+    in property <[SendRow]> send-rows;
+    in-out property <string> send-to;
+    in property <string> send-to-name;
+    in property <string> send-file;
+    in property <string> send-explain;
+    in property <string> send-status;
+    in property <bool> send-busy;
+    in-out property <string> s-drop-url;
+    in-out property <string> s-drop-token;
+    in-out property <int> s-drop-days: 7;
+    in property <string> drop-status;
+    callback send-open();
+    callback send-search(string);
+    callback send-pick(string);
+    callback send-pick-file();
+    callback send-clear-file();
+    callback send-go(string);
+    callback save-drop();
+    pure function level-color(l: string) -> color {
+        l == "D" ? Theme.red : l == "C" ? Theme.accent : l == "B" ? Theme.dim : Theme.faint
+    }
+    pure function level-tip(l: string) -> string {
+        l == "A" ? "level A: direct, end-to-end encrypted" : l == "B" ? "level B: end-to-end encrypted, via relay or mailbox" : l == "C" ? "level C: readable by the service in between" : l == "D" ? "level D: not encrypted" : ""
+    }
     in-out property <int> settings-tab: 0;
     in-out property <float> split: 0.5;
     in-out property <int> invite-kind: 0;
@@ -589,6 +617,58 @@ export component MainWindow inherits Window {
             }
         }
 
+        // ------------------------------------------------ panel: send to someone
+        if root.panel == 8: Rectangle {
+            vertical-stretch: 0;
+            border-width: 1px;
+            border-color: Theme.dim;
+            VerticalLayout {
+                padding: 6px;
+                spacing: 4px;
+                Text { text: "> send to someone"; color: Theme.accent; font-size: Theme.small; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { text: root.send-file == "" ? "file: none (drop one on the bar)" : "file: " + root.send-file; color: root.send-file == "" ? Theme.dim : Theme.fg; font-size: Theme.small; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                    RButton { text: "pick…"; clicked => { root.send-pick-file(); } }
+                    if root.send-file != "": RButton { text: "x"; tone: Theme.dim; clicked => { root.send-clear-file(); } }
+                }
+                sq := RInput { placeholder: "to: name or network…"; edited => { root.send-search(sq.text); } accepted(t) => { root.send-search(t); } }
+                for r in root.send-rows: Rectangle {
+                    height: 18px;
+                    background: r.key == root.send-to ? Theme.line : (sra.has-hover ? Theme.hover : transparent);
+                    HorizontalLayout {
+                        spacing: 6px;
+                        padding-left: 2px;
+                        Text { text: r.level; color: root.level-color(r.level); font-size: Theme.small; font-weight: 700; width: 10px; vertical-alignment: center; }
+                        Text { text: r.name; color: Theme.fg; font-size: Theme.small; overflow: elide; horizontal-stretch: 1; vertical-alignment: center; }
+                        Text { text: r.place; color: Theme.dim; font-size: 10px; vertical-alignment: center; }
+                    }
+                    sra := TouchArea {
+                        clicked => { root.send-pick(r.key); }
+                        changed has-hover => {
+                            if (self.has-hover) {
+                                Tip.x = self.absolute-position.x + 20px;
+                                Tip.top = self.absolute-position.y;
+                                Tip.bottom = self.absolute-position.y + self.height;
+                                Tip.text = root.level-tip(r.level);
+                            } else {
+                                Tip.text = "";
+                            }
+                        }
+                    }
+                }
+                snote := RInput { placeholder: root.send-to == "" ? "message (optional)" : "message to " + root.send-to-name + " (optional)"; }
+                HorizontalLayout {
+                    spacing: 4px;
+                    alignment: start;
+                    RButton { text: root.send-busy ? "sending…" : "send"; clicked => { if (!root.send-busy) { root.send-go(snote.text); snote.text = ""; } } }
+                    RButton { text: "close"; tone: Theme.dim; clicked => { root.panel = 0; } }
+                }
+                RCaption { text: root.send-explain; wrap: word-wrap; }
+                if root.send-status != "": Text { text: root.send-status; color: Theme.accent; font-size: Theme.small; wrap: word-wrap; }
+            }
+        }
+
         // ------------------------------------------------ panel: new group
         if root.panel == 5: Rectangle {
             vertical-stretch: 0;
@@ -983,6 +1063,17 @@ export component MainWindow inherits Window {
                     RCaption { text: "bootstrap / relay nodes (multiaddrs)"; }
                     RArea { text <=> root.s-bootstrap; height: 40px; placeholder: "/ip4/…/tcp/…/p2p/12D3…"; }
                     RButton { text: "save"; clicked => { root.save-network(); } }
+                    RCaption { text: "send to someone: the drop keeps files for people outside RIM, encrypted; the key is only in the link"; wrap: word-wrap; }
+                    HorizontalLayout { spacing: 4px; RCaption { text: "drop"; width: 50px; vertical-alignment: center; } RInput { text <=> root.s-drop-url; } }
+                    HorizontalLayout { spacing: 4px; RCaption { text: "token"; width: 50px; vertical-alignment: center; } RInput { text <=> root.s-drop-token; password: true; placeholder: "(kept in the keychain)"; } }
+                    HorizontalLayout {
+                        spacing: 3px;
+                        alignment: start;
+                        RCaption { text: "keep files"; vertical-alignment: center; }
+                        for d in [1, 7, 30]: RTab { text: d + "d"; active: root.s-drop-days == d; clicked => { root.s-drop-days = d; } }
+                        RButton { text: "save & check"; clicked => { root.save-drop(); } }
+                    }
+                    if root.drop-status != "": RCaption { text: root.drop-status; wrap: word-wrap; }
                     RCaption { text: "diagnostics"; }
                     RArea { text: root.net-info; height: 150px; read-only: true; font-size: 9px; }
                 }
@@ -1150,12 +1241,13 @@ export component MainWindow inherits Window {
                                     overflow: elide;
                                 }
                                 Text {
-                                    text: c.typing ? "typing…" : c.awaiting ? "awaiting authorization" : row-ta.has-hover && c.devs != "" ? c.devs : c.music != "" && c.status != "Offline" ? "♪ " + c.music : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
+                                    text: c.kind == "send" ? (root.send-file != "" ? root.send-file : "any contact, any network, any file") : c.typing ? "typing…" : c.awaiting ? "awaiting authorization" : row-ta.has-hover && c.devs != "" ? c.devs : c.music != "" && c.status != "Offline" ? "♪ " + c.music : (c.status + (c.battery ? " · on battery" : "") + (c.away != "" ? " · " + c.away : ""));
                                     color: c.awaiting || c.typing ? Theme.accent : Theme.dim;
                                     font-size: Theme.small;
                                     overflow: elide;
                                 }
                             }
+                            if c.level != "": Text { text: c.level; color: root.level-color(c.level); font-size: 10px; font-weight: 700; vertical-alignment: center; }
                         }
                         row-ta := TouchArea {
                             changed has-hover => {
@@ -1163,13 +1255,14 @@ export component MainWindow inherits Window {
                                     Tip.x = self.absolute-position.x + 40px;
                                     Tip.top = self.absolute-position.y;
                                     Tip.bottom = self.absolute-position.y + self.height;
-                                    Tip.text = c.kind == "contact" ? "double-click: chat · right-click: details, lists, folder" : c.kind == "group" ? "double-click: group chat · right-click: members" : c.kind == "notes" ? "notes to yourself, on all your devices" : c.kind == "bot" ? "double-click: chat with this local AI bot" : c.kind == "net" ? "double-click: chat · right-click: remove from the list · not RIM-encrypted" : "click: fold / unfold";
+                                    Tip.text = c.level != "" ? root.level-tip(c.level) + (c.kind == "contact" ? " · double-click: chat · right-click: details" : c.kind == "net" ? " · double-click: chat · right-click: remove" : " · double-click: chat") : c.kind == "contact" ? "double-click: chat · right-click: details, lists, folder" : c.kind == "group" ? "double-click: group chat · right-click: members" : c.kind == "notes" ? "notes to yourself, on all your devices" : c.kind == "send" ? "click: send a text or a file to anyone, in any contact list · drop a file on the bar to start here" : c.kind == "bot" ? "double-click: chat with this local AI bot" : c.kind == "net" ? "double-click: chat · right-click: remove from the list · not RIM-encrypted" : "click: fold / unfold";
                                 } else {
                                     Tip.text = "";
                                 }
                             }
                             clicked => {
                                 if (c.kind == "folder") { root.toggle-folder(c.name); }
+                                else if (c.kind == "send") { root.send-open(); }
                                 else if (c.kind == "contact" || c.kind == "bot" || c.kind == "net") { root.select-contact(c.id); }
                             }
                             double-clicked => {

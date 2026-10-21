@@ -77,7 +77,8 @@ Invites are single-use by default, expire, and carry a small proof of work.
 | Offline delivery | Nostr mailbox (sealed, expiring, deleted after fetch), buddy relays, DHT slots |
 | Voice calls | 1:1, end-to-end encrypted, Opus with echo cancellation (speexdsp) and noise suppression (RNNoise), over the direct connection; screen sharing during a call (view only, choose the screen); no camera, no group calls |
 | Groups | Invite, add/remove with key rotation, rename, leave; signed group state |
-| Files | Direct connections only, encrypted, BLAKE3-verified, resumable |
+| Files | Direct connections only, encrypted, BLAKE3-verified, resumable; to anyone else through **send to someone** (below) |
+| Transport honesty | Every buddy shows how its conversation travels right now: **A** direct, **B** end-to-end via relay or mailbox, **C** readable by a service in between (other networks, bots), **D** not encrypted (mail). Hover for the meaning |
 | Multi-device | Link devices, sync contacts/settings/history/read state, rename, remote lock, revoke (the revoked device wipes its local data) |
 | Backup | Encrypted `.rimb` files (manual or scheduled), restore via passphrase or recovery words, history import |
 | Network | libp2p: QUIC + TCP/Noise, mDNS, Kademlia DHT, AutoNAT, relay v2, UPnP, optional helper mode, LAN-only mode. Behind two home routers: hole punching coordinated over Nostr and via public libp2p helper nodes, no port forwarding needed in most cases |
@@ -105,6 +106,32 @@ Invites are single-use by default, expire, and carry a small proof of work.
 - The phone app is tested in the Android emulator with Google Messages (SMS in, reply out), not yet on a real phone.
 - Changing helper/relay mode takes effect after a restart.
 - Profiles from the pre-alpha prototype are archived as `state.prototype.rim`; contacts have to be added again.
+
+## Send to someone
+
+The row under **note to self**. Click it, type a name or a network, pick someone from any list (RIM contacts,
+groups, mail, WhatsApp, Telegram, Signal, phone) and send a message, a file, or both. Dropping a file on the bar
+(with no chat docked) starts here too. Each recipient shows its level (A–D).
+
+- A RIM contact with a direct connection (A) gets the file directly, as always.
+- Everyone else gets a link. The file is encrypted on your computer (AES-256-GCM, 1 MiB chunks), only the ciphertext
+  goes to the **drop**, and the key is in the link after the `#`, which browsers never send to a server. The
+  recipient opens the link and their browser decrypts it ([download page](site/f/), on GitHub Pages). Files of any
+  size; very big ones stream to disk in Chromium-based browsers.
+- **Whoever can read the link can open the file.** Sent over RIM (B) only the recipient can; sent by mail (D), anyone
+  who can read that mail can too. The panel says which before you send.
+- The drop deletes files after 1, 7 or 30 days (settings → net). It needs a token, kept in the OS keychain.
+
+Run your own drop (e.g. on a Raspberry Pi behind a Cloudflare tunnel, no open port):
+
+```
+cd deploy/drop
+cp .env.example .env     # TUNNEL_TOKEN, RIM_DROP_TOKEN (at least 24 characters), where the files go
+docker compose up -d --build
+```
+
+Then enter its address and the token under settings → net → send to someone. `rim-drop` keeps nothing but
+ciphertext and a byte count, enforces a total quota and a per-file limit, and sweeps expired files every ten minutes.
 
 ## Mail
 
@@ -233,9 +260,11 @@ crates/rim-core         engine: identity, Olm/Megolm, libp2p swarm, Nostr mailbo
 crates/rim-cli          headless peer: node, bot, scripting
 crates/rim-plugin-sdk   plugin protocol (JSON lines over a local socket)
 app/                    Slint desktop app (ui/*.slint, src/dock.rs = docking)
+crates/rim-drop         send to someone: file format, upload client, the drop server
+site/                   GitHub Pages: invite page (i/), download page that decrypts in the browser (f/)
 plugins/                pomodoro, todo, player, mail, phone, whatsapp and telegram (Go), signal (own workspace)
 android/                RogueIM Phone, the Android app for the phone plugin
-deploy/                 Dockerfile, systemd unit, .deb scripts
+deploy/                 Dockerfiles (node, AI bot, drop), systemd unit, .deb scripts
 docs/                   PRD, tech stack, protocol spec
 ```
 
@@ -243,6 +272,8 @@ docs/                   PRD, tech stack, protocol spec
 
 ```
 cargo test -p rim-core -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-mail
+cargo test -p rogueim -p rim-drop --features rim-drop/server,rim-drop/client
+node site/f/test.js                     # the browser decryptor against rim-drop's known answer
 cargo test -p rim-core -- --ignored     # live tests against public Nostr relays
 ```
 

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/rim-core", "crates/rim-cli", "crates/rim-plugin-sdk", "app", "plugins/pomodoro", "plugins/todo", "plugins/player", "plugins/mail", "plugins/phone", "bots/llm"]
+members = ["crates/rim-core", "crates/rim-cli", "crates/rim-plugin-sdk", "crates/rim-drop", "app", "plugins/pomodoro", "plugins/todo", "plugins/player", "plugins/mail", "plugins/phone", "bots/llm"]
 exclude = ["plugins/signal"]
 
 [workspace.package]

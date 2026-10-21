@@ -36,6 +36,9 @@ jobs:
       # get flaky timeouts when all of them run at once.
       - run: cargo test -p rim-core -p rim-plugin-sdk -p rim-plugin-pomodoro -p rim-plugin-player -p rim-plugin-todo -p rim-plugin-mail -p rim-plugin-phone -- --test-threads=2
       - run: cargo build -p rogueim -p rim-cli
+      - run: cargo test -p rogueim -p rim-drop --features rim-drop/server,rim-drop/client
+      # The download page decrypts what rim-drop's format seals (known answer).
+      - run: node site/f/test.js
       - uses: actions/setup-go@v5
         with:
           go-version-file: plugins/whatsapp/go.mod

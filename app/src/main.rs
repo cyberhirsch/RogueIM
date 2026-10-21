@@ -12,6 +12,7 @@ mod plugins;
 mod update;
 mod links;
 mod screen;
+mod send;
 mod voice;
 
 use std::cell::RefCell;
@@ -99,6 +100,10 @@ struct Settings {
     api: bool,
     /// Plugins whose unencrypted channel the user agreed to send on (PRD TH-3).
     plain_ok: Vec<String>,
+    /// "send to someone": the drop for files (its token is in the OS keychain)
+    /// and how many days files stay there.
+    drop_url: String,
+    drop_days: u32,
 }
 
 impl Default for Settings {
@@ -147,6 +152,8 @@ impl Default for Settings {
             bots: vec![],
             api: false,
             plain_ok: vec![],
+            drop_url: send::DEFAULT_DROP.into(),
+            drop_days: 7,
         }
     }
 }
@@ -389,6 +396,11 @@ struct App {
     api: Option<bots::Api>,
     /// Other networks brought in by plugins (PRD §7.13), by plugin id.
     nets: HashMap<String, Net>,
+    /// "send to someone": the file, the chosen recipient, the search and a running upload.
+    send_file: Option<PathBuf>,
+    send_to: String,
+    send_query: String,
+    send_job: Option<send::Job>,
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     last_room: Instant,
 }
@@ -1139,6 +1151,7 @@ fn plain_row(kind: &str, id: &str, name: &str, device: &str, tint: Color) -> Con
         count: 0,
         music: "".into(),
         devs: "".into(),
+        level: "".into(),
     }
 }
 
@@ -1168,6 +1181,7 @@ fn rebuild_contacts(app: &AppRc) {
         count: 0,
         music: c.now_playing.clone().into(),
         devs: online_devices(c).into(),
+        level: send::level(&a, &c.id).into(),
     };
     let header = |name: &str, count: usize| {
         let mut r = plain_row("folder", name, name, "", acc);
@@ -1175,7 +1189,7 @@ fn rebuild_contacts(app: &AppRc) {
         r.count = count as i32;
         r
     };
-    let mut rows = vec![plain_row("notes", "notes", "note to self", "notes", acc)];
+    let mut rows = vec![plain_row("notes", "notes", "note to self", "notes", acc), plain_row("send", "send", "send to someone", "send", acc)];
     if !a.settings.bots.is_empty() {
         rows.push(header("bots", a.settings.bots.len()));
         if !collapsed("bots") {
@@ -1184,6 +1198,7 @@ fn rebuild_contacts(app: &AppRc) {
                 r.status = "local".into();
                 r.os = "AI".into();
                 r.bot = true;
+                r.level = "C".into();
                 rows.push(r);
             }
         }
@@ -1195,6 +1210,7 @@ fn rebuild_contacts(app: &AppRc) {
                 let mut r = plain_row("group", &g.id, &g.name, "group", acc);
                 r.status = format!("{} members", g.members.len()).into();
                 r.unread = g.unread as i32;
+                r.level = "B".into();
                 rows.push(r);
             }
         }
@@ -1236,6 +1252,7 @@ fn rebuild_contacts(app: &AppRc) {
             r.os = net_os(&n.label).into();
             r.status = if c.status.is_empty() { c.info.clone() } else { c.status.clone() }.into();
             r.unread = c.unread as i32;
+            r.level = send::level(&a, &format!("n:{p}:{}", c.id)).into();
             rows.push(r);
         }
     }
@@ -2513,6 +2530,8 @@ fn main() {
     main.set_s_start_min(settings.start_min);
     main.set_s_update_check(settings.update_check);
     main.set_s_chats_in_bar(settings.chats_in_bar);
+    main.set_s_drop_url(settings.drop_url.clone().into());
+    main.set_s_drop_days(settings.drop_days as i32);
     main.set_s_update_auto(settings.update_auto);
     main.set_update_status(format!("this is v{}", env!("CARGO_PKG_VERSION")).into());
     main.set_s_notify_online(settings.notify_online);
@@ -2599,6 +2618,10 @@ fn main() {
         bot_line: 1 << 60,
         api: None,
         nets: HashMap::new(),
+        send_file: None,
+        send_to: String::new(),
+        send_query: String::new(),
+        send_job: None,
         last_room: Instant::now(),
     }));
     for e in register_hotkeys(&app) {
@@ -2641,6 +2664,7 @@ fn main() {
             poll_plugins(&app);
             poll_links(&app);
             poll_update(&app);
+            poll_send(&app);
             poll_bots(&app);
             poll_make_room(&app);
             let expired = app.borrow().notice_until.map(|t| Instant::now() > t).unwrap_or(false);
@@ -2833,6 +2857,7 @@ fn wire_login(app: &AppRc, main: &MainWindow) {
 }
 
 fn wire_main(app: &AppRc, main: &MainWindow) {
+    wire_send(app, main);
     let ap = app.clone();
     main.on_set_status(move |i| {
         let s = Status::SELECTABLE[i as usize];
@@ -4072,6 +4097,195 @@ fn wire_plugins(app: &AppRc, main: &MainWindow) {
     });
 }
 
+// ================================================================ send to someone (HB-3)
+
+fn open_send(app: &AppRc) {
+    refresh_send(app);
+    if let Some(m) = app.borrow().main.upgrade() {
+        m.set_panel(8);
+    }
+}
+
+fn refresh_send(app: &AppRc) {
+    let a = app.borrow();
+    let Some(m) = a.main.upgrade() else { return };
+    let mut all = send::targets(&a);
+    all.retain(|t| send::matches(t, &a.send_query));
+    let rows: Vec<SendRow> = all
+        .iter()
+        .take(12)
+        .map(|t| SendRow { key: t.key.clone().into(), name: t.name.clone().into(), place: t.place.clone().into(), level: t.level.into() })
+        .collect();
+    m.set_send_rows(ModelRc::new(VecModel::from(rows)));
+    m.set_send_to(a.send_to.clone().into());
+    m.set_send_to_name(if a.send_to.is_empty() { String::new() } else { header_for(&a, &a.send_to).name }.into());
+    m.set_send_file(a.send_file.as_ref().map(|p| format!("{} ({})", send::file_name(p), human_size(send::file_size(p)))).unwrap_or_default().into());
+    m.set_send_explain(send::explain(&a, &a.send_to, a.send_file.as_ref()).into());
+    m.set_send_busy(a.send_job.is_some());
+}
+
+fn send_go(app: &AppRc, note: &str) {
+    let (key, file) = {
+        let a = app.borrow();
+        (a.send_to.clone(), a.send_file.clone())
+    };
+    let status = |s: &str| {
+        if let Some(m) = app.borrow().main.upgrade() {
+            m.set_send_status(s.into());
+        }
+    };
+    if key.is_empty() {
+        status("Pick someone first.");
+        return;
+    }
+    let Some(path) = file else {
+        if note.trim().is_empty() {
+            status("Nothing to send: pick a file or write a message.");
+        } else {
+            chat_send(app, &key, note, false, "");
+            status("Sent.");
+        }
+        return;
+    };
+    if !path.is_file() {
+        status("That file is gone.");
+        return;
+    }
+    if send::goes_direct(&app.borrow(), &key) {
+        send_path(app, &key, &path);
+        if !note.trim().is_empty() {
+            chat_send(app, &key, note, false, "");
+        }
+        app.borrow_mut().send_file = None;
+        status("The file goes directly; its progress is in the chat.");
+        refresh_send(app);
+        return;
+    }
+    // The link is the key: on an unencrypted channel the user agrees first (TH-3).
+    if let Some((p, _)) = net_key(&key)
+        && !net_agreed(app, p)
+    {
+        return;
+    }
+    let (url, days, token) = {
+        let a = app.borrow();
+        (a.settings.drop_url.trim().to_string(), a.settings.drop_days, send::token(&a.profile))
+    };
+    let Some(token) = token.filter(|_| !url.is_empty()) else {
+        status("No drop set up yet: settings → net → send to someone.");
+        return;
+    };
+    let job = send::start(&url, token, &path, days, &key, note);
+    status(&format!("encrypting and uploading {}…", job.name));
+    let mut a = app.borrow_mut();
+    a.send_job = Some(job);
+    a.send_file = None;
+    drop(a);
+    refresh_send(app);
+}
+
+fn poll_send(app: &AppRc) {
+    let msgs: Vec<send::Progress> = match &app.borrow().send_job {
+        Some(j) => j.rx.try_iter().collect(),
+        None => return,
+    };
+    let Some(m) = app.borrow().main.upgrade() else { return };
+    for p in msgs {
+        match p {
+            send::Progress::Bytes(done, total) => {
+                let name = app.borrow().send_job.as_ref().map(|j| j.name.clone()).unwrap_or_default();
+                let pct = (done * 100).checked_div(total).unwrap_or(0);
+                m.set_send_status(format!("uploading {name}: {pct}% · {} of {}", human_size(done), human_size(total)).into());
+            }
+            send::Progress::Done { key, text } => {
+                app.borrow_mut().send_job = None;
+                chat_send(app, &key, &text, false, "");
+                let name = header_for(&app.borrow(), &key).name;
+                m.set_send_status(format!("Uploaded. The link went to {name}.").into());
+                refresh_send(app);
+            }
+            send::Progress::Failed(e) => {
+                app.borrow_mut().send_job = None;
+                m.set_send_status(format!("Upload failed: {e}").into());
+                refresh_send(app);
+            }
+        }
+    }
+}
+
+fn wire_send(app: &AppRc, main: &MainWindow) {
+    let ap = app.clone();
+    main.on_send_open(move || {
+        let open = ap.borrow().main.upgrade().is_some_and(|m| m.get_panel() == 8);
+        if open {
+            if let Some(m) = ap.borrow().main.upgrade() {
+                m.set_panel(0);
+            }
+        } else {
+            open_send(&ap);
+        }
+    });
+    let ap = app.clone();
+    main.on_send_search(move |q| {
+        ap.borrow_mut().send_query = q.to_string();
+        refresh_send(&ap);
+    });
+    let ap = app.clone();
+    main.on_send_pick(move |k| {
+        ap.borrow_mut().send_to = k.to_string();
+        refresh_send(&ap);
+    });
+    let ap = app.clone();
+    main.on_send_pick_file(move || {
+        if let Some(p) = rfd::FileDialog::new().set_title("Send a file").pick_file() {
+            ap.borrow_mut().send_file = Some(p);
+            refresh_send(&ap);
+        }
+    });
+    let ap = app.clone();
+    main.on_send_clear_file(move || {
+        ap.borrow_mut().send_file = None;
+        refresh_send(&ap);
+    });
+    let ap = app.clone();
+    main.on_send_go(move |t| send_go(&ap, &t));
+    let ap = app.clone();
+    main.on_save_drop(move || {
+        let Some(m) = ap.borrow().main.upgrade() else { return };
+        let url = m.get_s_drop_url().trim().trim_end_matches('/').to_string();
+        let typed = m.get_s_drop_token().trim().to_string();
+        let profile = ap.borrow().profile.clone();
+        if !typed.is_empty() {
+            if let Err(e) = send::set_token(&profile, &typed) {
+                m.set_drop_status(format!("Could not store the token: {e}").into());
+                return;
+            }
+            m.set_s_drop_token("".into());
+        }
+        {
+            let mut a = ap.borrow_mut();
+            a.settings.drop_url = url.clone();
+            a.settings.drop_days = m.get_s_drop_days().clamp(1, 90) as u32;
+            save_settings(&a.dir, &a.settings);
+        }
+        let Some(token) = send::token(&profile) else {
+            m.set_drop_status("Saved. No token yet: the drop's owner gives it to you.".into());
+            return;
+        };
+        m.set_drop_status("checking…".into());
+        let weak = m.as_weak();
+        std::thread::spawn(move || {
+            let r = rim_drop::client::check(&url, &token);
+            let _ = weak.upgrade_in_event_loop(move |m| {
+                m.set_drop_status(match r {
+                    Ok(()) => "Saved. The drop answers and takes the token.".into(),
+                    Err(e) => format!("Saved, but the drop says: {e}").into(),
+                });
+            });
+        });
+    });
+}
+
 // ================================================================ drag & drop (FT-4)
 
 /// Files dropped on a chat window (or on the bar while a chat is docked)
@@ -4084,7 +4298,11 @@ fn install_file_drop(app: &AppRc, w: &slint::Window, key: Option<String>) {
             let target = key.clone().or_else(|| ap.borrow().docked_chat.clone());
             match target {
                 Some(k) => send_path(&ap, &k, path),
-                None => notice(&ap, "Drop files on a chat to send them."),
+                None if path.is_file() => {
+                    ap.borrow_mut().send_file = Some(path.clone());
+                    open_send(&ap);
+                }
+                None => notice(&ap, "Only single files can be sent, not folders."),
             }
             return EventResult::PreventDefault;
         }
