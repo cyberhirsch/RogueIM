@@ -87,7 +87,13 @@ pub fn write(path: &Path, plain: &[u8]) -> io::Result<()> {
 
 fn write_with(key: &[u8; 32], path: &Path, plain: &[u8]) -> io::Result<()> {
     let tmp = path.with_extension("sealing");
-    std::fs::write(&tmp, seal_for(key, path, plain))?;
+    {
+        use std::io::Write;
+        // Flushed before the rename, so a power loss cannot leave a file of zeros.
+        let mut f = std::fs::File::create(&tmp)?;
+        f.write_all(&seal_for(key, path, plain))?;
+        f.sync_all()?;
+    }
     std::fs::rename(&tmp, path)
 }
 
