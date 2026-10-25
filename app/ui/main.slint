@@ -51,18 +51,21 @@ export struct BotRow { name: string, info: string }
 export struct SoundRow { label: string, on: bool, source: string }
 
 // One element of a plugin's section, drawn by RogueIM (plugins never render).
-component GadgetItemView inherits Rectangle {
+component GadgetItemView inherits VerticalLayout {
     in property <GadgetItem> item;
     callback click();
     callback input(string);
     // the text of an input while it is typed (input() comes on Enter)
     callback edit(string);
     callback check(bool);
-    min-height: root.item.kind == "qr" ? 230px : 18px;
+    // A layout, so wrapped text takes the height it needs instead of running
+    // into the next row.
+    min-height: 18px;
+    alignment: center;
     horizontal-stretch: root.item.kind == "button" ? 0 : 1;
-    if root.item.kind == "title": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.accent; font-size: Theme.small; font-weight: 700; vertical-alignment: center; horizontal-alignment: left; overflow: elide; }
-    if root.item.kind == "text": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-alignment: left; overflow: elide; }
-    if root.item.kind == "dim": Text { x: 0; width: parent.width; text: root.item.text; color: Theme.dim; font-size: 10px; vertical-alignment: center; horizontal-alignment: left; wrap: word-wrap; }
+    if root.item.kind == "title": Text { text: root.item.text; color: Theme.accent; font-size: Theme.small; font-weight: 700; vertical-alignment: center; horizontal-alignment: left; overflow: elide; }
+    if root.item.kind == "text": Text { text: root.item.text; color: Theme.fg; font-size: Theme.small; vertical-alignment: center; horizontal-alignment: left; wrap: word-wrap; }
+    if root.item.kind == "dim": Text { text: root.item.text; color: Theme.dim; font-size: 10px; vertical-alignment: center; horizontal-alignment: left; wrap: word-wrap; }
     if root.item.kind == "button": RButton { text: root.item.text; clicked => { root.click(); } }
     if root.item.kind == "input": RInput {
         text: root.item.text;
@@ -72,20 +75,22 @@ component GadgetItemView inherits Rectangle {
         edited => { root.edit(self.text); }
     }
     if root.item.kind == "progress": Rectangle {
-        y: (parent.height - 5px) / 2;
         height: 5px;
         background: Theme.line;
         Rectangle { x: 0; width: parent.width * max(0.0, min(1.0, root.item.value)); background: Theme.accent; }
     }
     // Black on white whatever the theme, so phones can read it.
-    if root.item.kind == "qr": Image {
-        x: 0;
-        width: min(parent.width, 230px);
-        height: self.width;
-        source: root.item.image;
-        image-rendering: pixelated;
+    if root.item.kind == "qr": Rectangle {
+        height: min(root.width, 230px);
+        Image {
+            x: 0;
+            width: min(parent.width, 230px);
+            height: self.width;
+            source: root.item.image;
+            image-rendering: pixelated;
+        }
     }
-    if root.item.kind == "check": RCheck { x: 0; width: parent.width; text: root.item.text; checked: root.item.checked; toggled(v) => { root.check(v); } }
+    if root.item.kind == "check": RCheck { text: root.item.text; checked: root.item.checked; toggled(v) => { root.check(v); } }
 }
 
 
