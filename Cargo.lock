@@ -7788,7 +7788,7 @@ dependencies = [
 
 [[package]]
 name = "rim-drop"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -7806,7 +7806,7 @@ dependencies = [
 
 [[package]]
 name = "rim-llm-bot"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "rim-core",
  "serde",
@@ -7816,7 +7816,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-mail"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "async-imap",
  "futures",
@@ -7835,7 +7835,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-phone"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aes-gcm",
  "base64 0.22.1",
@@ -7850,7 +7850,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-player"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "interprocess",
  "objc2 0.6.4",
@@ -7865,7 +7865,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-pomodoro"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "interprocess",
  "rim-plugin-sdk",
@@ -7887,7 +7887,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-todo"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "base64 0.23.1",
  "keyring",
@@ -7926,7 +7926,7 @@ dependencies = [
 
 [[package]]
 name = "rogueim"
-version = "0.1.11"
+version = "0.1.12"
 dependencies = [
  "aec-rs",
  "arboard",

@@ -9,8 +9,8 @@ android {
         applicationId = "io.github.cyberhirsch.rogueim.phone"
         minSdk = 28
         targetSdk = 36
-        versionCode = 4
-        versionName = "0.1.11"
+        versionCode = 5
+        versionName = "0.1.12"
     }
     signingConfigs {
         // A release key from the environment (CI); without one, the debug key signs.
