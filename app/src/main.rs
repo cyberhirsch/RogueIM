@@ -1383,6 +1383,15 @@ fn position_index(all: &[dock::Monitor], id: &str, left: bool) -> usize {
 /// Applied twice: moving to a monitor with a different DPI makes the window
 /// system rescale it, so the second pass pins the final size.
 fn redock(app: &AppRc) {
+    // Hidden in the tray: reserve nothing, or other windows cannot use that strip.
+    // Remember the layout so the monitor watch does not keep trying.
+    if app.borrow().hidden {
+        let all = app.borrow().main.upgrade().map(|m| dock::monitors(m.window()));
+        if let Some(all) = all {
+            app.borrow_mut().layout = all;
+        }
+        return;
+    }
     let (m, left, pref, collapsed, autohide, bar) = {
         let a = app.borrow();
         let Some(m) = a.main.upgrade() else { return };
@@ -1399,9 +1408,9 @@ fn redock(app: &AppRc) {
     let (w, reserve) = if collapsed { (STRIP_WIDTH, false) } else { (bar, !autohide) };
     dock::hide_from_taskbar(m.window());
     dock::dock(m.window(), w, left, &mon, reserve);
-    let weak = m.as_weak();
+    let (weak, ap) = (m.as_weak(), app.clone());
     slint::Timer::single_shot(Duration::from_millis(250), move || {
-        if let Some(m) = weak.upgrade() {
+        if let Some(m) = weak.upgrade().filter(|_| !ap.borrow().hidden) {
             dock::dock(m.window(), w, left, &mon, reserve);
         }
     });
