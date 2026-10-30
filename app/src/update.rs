@@ -214,8 +214,17 @@ fn replace(dir: &Path, rel: &str, bytes: &[u8], exec: bool) -> Result<(), String
     if let Some(p) = target.parent() {
         std::fs::create_dir_all(p).map_err(|e| e.to_string())?;
     }
-    let new = target.with_extension(format!("{}new", target.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()));
-    let old = target.with_extension(format!("{}old", target.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default()));
+    let ext = target.extension().map(|e| format!("{}.", e.to_string_lossy())).unwrap_or_default();
+    let new = target.with_extension(format!("{ext}new"));
+    // An `.old` left by an update that was never restarted into is still the
+    // running program on Windows and cannot be removed; take the next free name.
+    let old = (0..100)
+        .map(|i| target.with_extension(if i == 0 { format!("{ext}old") } else { format!("{ext}{i}.old") }))
+        .find(|p| {
+            let _ = std::fs::remove_file(p);
+            !p.exists()
+        })
+        .ok_or_else(|| format!("{}: too many old copies", target.display()))?;
     std::fs::write(&new, bytes).map_err(|e| format!("{}: {e}", new.display()))?;
     #[cfg(unix)]
     if exec {
@@ -223,7 +232,6 @@ fn replace(dir: &Path, rel: &str, bytes: &[u8], exec: bool) -> Result<(), String
         let _ = std::fs::set_permissions(&new, std::fs::Permissions::from_mode(0o755));
     }
     let _ = exec;
-    let _ = std::fs::remove_file(&old);
     if target.exists() {
         std::fs::rename(&target, &old).map_err(|e| format!("{}: {e}", target.display()))?;
     }
@@ -374,6 +382,27 @@ mod tests {
         let files = unpack("x.zip", buf.get_ref()).unwrap();
         let names: Vec<&str> = files.iter().map(|(p, _)| p.as_str()).collect();
         assert_eq!(names, ["rogueim.exe", "sounds/message.wav"]);
+    }
+
+    /// An `.old` that cannot be removed (on Windows: the program still running
+    /// from it) must not block the next update.
+    #[test]
+    fn replace_works_past_a_locked_old_copy() {
+        let d = std::env::temp_dir().join(format!("rim-update-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(d.join("a.exe"), b"v2").unwrap();
+        std::fs::write(d.join("a.exe.old"), b"v1").unwrap();
+        #[cfg(windows)]
+        let _lock = {
+            use std::os::windows::fs::OpenOptionsExt;
+            std::fs::OpenOptions::new().read(true).share_mode(1).open(d.join("a.exe.old")).unwrap()
+        };
+        replace(&d, "a.exe", b"v3", true).unwrap();
+        assert_eq!(std::fs::read(d.join("a.exe")).unwrap(), b"v3");
+        #[cfg(windows)]
+        drop(_lock);
+        let _ = std::fs::remove_dir_all(&d);
     }
 }
 
