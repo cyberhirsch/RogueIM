@@ -40,7 +40,7 @@ const (
 	chatLines = 60
 	// Pictures up to this size are fetched as they are shown.
 	autoImage = 8 << 20
-	version   = "0.1.12"
+	version   = "0.1.13"
 )
 
 type config struct {

@@ -2685,7 +2685,7 @@ dependencies = [
 
 [[package]]
 name = "rim-plugin-signal"
-version = "0.1.12"
+version = "0.1.13"
 dependencies = [
  "futures",
  "hex",
